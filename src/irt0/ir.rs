@@ -26,17 +26,10 @@ pub enum IRBinOpKind {
     Sub,
 
     Shl,
-    Shr,
 
     And,
-    Or,
-    Xnor,
 
     Eq,
-    Le,
-    Leq,
-    Ge,
-    Geq,
 }
 
 #[derive(Debug, Clone)]
@@ -48,9 +41,6 @@ pub enum IRExpr {
     },
 
     Deref(Box<IRExpr>),
-
-    MSB(Box<IRExpr>), // most significant bit
-    LSB(Box<IRExpr>), // least significant bit
 
     // Native
     Reg(Register),
