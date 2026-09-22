@@ -31,7 +31,7 @@ fn gather_flag_ops_from_expr(x: &IRExpr) -> Vec<FlagIR> {
             res.extend(gather_flag_ops_from_expr(lhs));
             res.extend(gather_flag_ops_from_expr(rhs));
         }
-        IRExpr::Deref(expr) | IRExpr::MSB(expr) | IRExpr::LSB(expr) => {
+        IRExpr::Deref(expr) => {
             res.extend(gather_flag_ops_from_expr(expr));
         }
         IRExpr::Flag(flag) => {
