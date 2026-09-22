@@ -22,13 +22,14 @@ enum FlagIR {
 fn gather_flag_ops_from_expr(x: &IRExpr) -> Vec<FlagIR> {
     let mut res: Vec<FlagIR> = vec![];
     match x {
-        IRExpr::Reg(..) | IRExpr::CU8(..) | IRExpr::CU32(..) | IRExpr::CU64(..) => (),
+        IRExpr::Reg(..)
+        | IRExpr::Deref(..)
+        | IRExpr::CU8(..)
+        | IRExpr::CU32(..)
+        | IRExpr::CU64(..) => (),
         IRExpr::BinOp { lhs, rhs, .. } => {
             res.extend(gather_flag_ops_from_expr(lhs));
             res.extend(gather_flag_ops_from_expr(rhs));
-        }
-        IRExpr::Deref(expr) => {
-            res.extend(gather_flag_ops_from_expr(expr));
         }
         IRExpr::Flag(flag) => {
             _ = res.push(FlagIR::ReadFlag(flag.clone()));

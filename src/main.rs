@@ -1,11 +1,16 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use iced_x86::Register;
 
-use crate::irt0::ir::{IRBinOpKind, IRExpr, IRInst, Program};
+use crate::irt0::ir::{IRBinOpKind, IRExpr, IRInst, NativeFlag, Program};
 
 mod irt0;
 mod irt1;
+
+struct Partition {
+    entry_point: usize,
+    external_flags: HashSet<NativeFlag>,
+}
 
 fn main() {
     const CODE: &[u8] = &[
@@ -17,10 +22,16 @@ fn main() {
         0x3b, 0xc1, 0x72, 0x0b, 0x90, 0x2b, 0xc1, 0x3b, 0xc1, 0x73, 0xfa, 0x41, 0x89, 0x40, 0x28,
         0x41, 0x8b, 0x40, 0x10, 0xc3,
     ];
+    let base_offset = 0x140095be0;
 
-    let irt0program = irt0::lift(CODE, 0x140095be0);
+    let irt0program = irt0::lift(CODE, base_offset);
 
-    let mut edges: HashMap<usize, Option<usize>> = HashMap::new();
+    for p in &irt0program {
+        println!("{:?}", p.1);
+    }
+
+    let mut partition_entries: HashSet<usize> = HashSet::new();
+    partition_entries.insert(base_offset);
     fn try_eval_addr(expr: &IRExpr, offset: &usize) -> usize {
         match expr {
             IRExpr::BinOp { kind, lhs, rhs } => {
@@ -40,49 +51,79 @@ fn main() {
         }
     }
 
-    fn handle_instruction(
-        edges: &mut HashMap<usize, Option<usize>>,
-        offset: &usize,
-        instr: &IRInst,
-    ) {
+    fn handle_instruction(entries: &mut HashSet<usize>, offset: &usize, instr: &IRInst) {
         match instr {
             IRInst::If(_, inner) => {
-                handle_instruction(edges, offset, inner);
+                handle_instruction(entries, offset, inner);
             }
             IRInst::Jmp(expr) => {
                 let target = try_eval_addr(expr, offset);
-                edges.insert(offset.clone(), Some(target));
+                entries.insert(target);
             }
-            IRInst::Ret(_) => _ = edges.insert(offset.clone(), None),
             _ => (),
         }
     }
 
     for (offset, instr) in &irt0program {
-        handle_instruction(&mut edges, offset, instr);
+        handle_instruction(&mut partition_entries, offset, instr);
     }
 
-    for (src, dest) in &edges {
-        let mut inst: Option<&IRInst> = None;
-        for (offset, instr) in &irt0program {
-            if *offset == *src {
-                inst = Some(instr);
-                break;
-            }
-        }
+    // Every jump destination is a partition entry point
+    // A partition lasts from entry to jump and defines what flags are local
+    println!("{:?}", partition_entries);
 
-        println!("\n=========\n{:?}\n-----------", inst.unwrap());
-        if let Some(dest) = dest {
-            for (offset, instr) in &irt0program {
-                if offset < dest {
-                    continue;
+    let mut partitions: Vec<Partition> = Vec::new();
+
+    fn analyze_expression(
+        e: &IRExpr,
+        live_flags: &HashSet<NativeFlag>,
+        external_flags: &mut HashSet<NativeFlag>,
+    ) {
+        match e {
+            IRExpr::BinOp { lhs, rhs, .. } => {
+                analyze_expression(lhs, live_flags, external_flags);
+                analyze_expression(rhs, live_flags, external_flags);
+            }
+            IRExpr::Flag(flag) => {
+                if !live_flags.contains(flag) {
+                    external_flags.insert(flag.clone());
                 }
-                println!("{:?}", instr);
             }
-        } else {
-            println!("<EXIT>")
+            _ => {}
         }
     }
 
-    println!("{:?}", edges)
+    fn analyze_partition(entry: &usize, program: &Program) -> Partition {
+        let mut live_flags: HashSet<NativeFlag> = HashSet::new();
+        let mut external_flags: HashSet<NativeFlag> = HashSet::new();
+        for (offset, instr) in program {
+            if offset < entry {
+                continue;
+            }
+            match instr {
+                IRInst::SetFlagsFrom(flags, _) => {
+                    live_flags.extend(flags.iter().cloned());
+                }
+                IRInst::ClearFlags(flags) => {
+                    flags.iter().for_each(|x| _ = live_flags.remove(x));
+                }
+                IRInst::If(expr, _) => {
+                    analyze_expression(expr, &live_flags, &mut external_flags);
+                }
+                _ => {}
+            }
+        }
+        Partition {
+            entry_point: *entry,
+            external_flags: external_flags,
+        }
+    }
+
+    for p in partition_entries {
+        partitions.push(analyze_partition(&p, &irt0program));
+    }
+
+    for p in partitions {
+        assert!(p.external_flags.len() == 0);
+    }
 }
