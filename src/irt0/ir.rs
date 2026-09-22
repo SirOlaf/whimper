@@ -150,10 +150,6 @@ fn lift_add(x: Instruction) -> Vec<IRInst> {
                 rhs: Box::new(lift_op(x, 1)),
             };
             vec![
-                IRInst::Asgn {
-                    dest: lift_op(x, 0),
-                    src: add_expr.clone(),
-                },
                 IRInst::SetFlagsFrom(
                     HashSet::from([
                         NativeFlag::Carry,
@@ -163,8 +159,12 @@ fn lift_add(x: Instruction) -> Vec<IRInst> {
                         NativeFlag::Sign,
                         NativeFlag::Zero,
                     ]),
-                    add_expr,
+                    add_expr.clone(),
                 ),
+                IRInst::Asgn {
+                    dest: lift_op(x, 0),
+                    src: add_expr.clone(),
+                },
             ]
         }
         _ => {
@@ -182,10 +182,6 @@ fn lift_sub(x: Instruction) -> Vec<IRInst> {
                 rhs: Box::new(lift_op(x, 1)),
             };
             vec![
-                IRInst::Asgn {
-                    dest: lift_op(x, 0),
-                    src: sub_expr.clone(),
-                },
                 IRInst::SetFlagsFrom(
                     HashSet::from([
                         NativeFlag::Overflow,
@@ -197,6 +193,10 @@ fn lift_sub(x: Instruction) -> Vec<IRInst> {
                     ]),
                     sub_expr.clone(),
                 ),
+                IRInst::Asgn {
+                    dest: lift_op(x, 0),
+                    src: sub_expr.clone(),
+                },
             ]
         }
         _ => {
@@ -302,10 +302,6 @@ fn lift_shl(x: Instruction) -> Vec<IRInst> {
                 rhs: Box::new(lift_op(x, 1)),
             };
             vec![
-                IRInst::Asgn {
-                    dest: lift_op(x, 0),
-                    src: expr.clone(),
-                },
                 IRInst::SetFlagsFrom(
                     HashSet::from([
                         NativeFlag::Sign,
@@ -316,6 +312,10 @@ fn lift_shl(x: Instruction) -> Vec<IRInst> {
                     ]),
                     expr.clone(),
                 ),
+                IRInst::Asgn {
+                    dest: lift_op(x, 0),
+                    src: expr.clone(),
+                },
             ]
         }
         _ => panic!("{:?}", x),
