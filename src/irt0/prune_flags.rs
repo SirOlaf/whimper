@@ -1,8 +1,8 @@
-use std::{collections::HashSet, iter::Product};
+use std::collections::HashSet;
 
-use crate::{
-    irt0::{self, IRExpr, IRInst, NativeFlag},
-    irt1::prune_flags::FlagIR::WriteFlag,
+use crate::irt0::{
+    self,
+    ir::{self, IRExpr, IRInst, NativeFlag},
 };
 
 type SourceIdx = usize;
@@ -67,12 +67,12 @@ fn gather_flag_ops_from_instr(x: &mut IRInst, idx: SourceIdx) -> Vec<FlagIR> {
     res
 }
 
-fn prune_program(program: irt0::Program, flag_code: Vec<FlagIR>) -> irt0::Program {
+fn prune_program(program: ir::Program, flag_code: Vec<FlagIR>) -> ir::Program {
     // TODO: Clean up, we do not need another two iterators here
     let mut program = program;
     for f in flag_code {
         match f {
-            WriteFlag { flag, source_idx } => match &mut program[source_idx].1 {
+            FlagIR::WriteFlag { flag, source_idx } => match &mut program[source_idx].1 {
                 IRInst::SetFlagsFrom(flags, _) | IRInst::ClearFlags(flags) => {
                     flags.insert(flag);
                 }
@@ -82,7 +82,7 @@ fn prune_program(program: irt0::Program, flag_code: Vec<FlagIR>) -> irt0::Progra
         }
     }
 
-    let mut res: irt0::Program = vec![];
+    let mut res: ir::Program = vec![];
     for instr in program.into_iter() {
         match &instr.1 {
             IRInst::SetFlagsFrom(flags, _) | IRInst::ClearFlags(flags) => {
@@ -96,7 +96,7 @@ fn prune_program(program: irt0::Program, flag_code: Vec<FlagIR>) -> irt0::Progra
     res
 }
 
-pub fn tr(program: irt0::Program) -> irt0::Program {
+pub fn tr(program: ir::Program) -> ir::Program {
     let mut program = program;
     let mut flag_code: Vec<FlagIR> = vec![];
     for (idx, (_, instr)) in program.iter_mut().enumerate() {

@@ -1,6 +1,3 @@
-mod irt1;
-use crate::irt1::prune_flags;
-
 mod irt0;
 
 fn main() {
@@ -14,9 +11,8 @@ fn main() {
         0x41, 0x8b, 0x40, 0x10, 0xc3,
     ];
 
-    let irll = irt0::lift_to_irt0(CODE, 0);
-
-    for (offset, instr) in prune_flags::tr(irll) {
+    let irt0program = irt0::lift(CODE);
+    for (_, instr) in irt0program {
         println!("{:?}", instr);
     }
 }
