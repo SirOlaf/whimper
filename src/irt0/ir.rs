@@ -4,8 +4,7 @@ use iced_x86::{
     Code, Decoder, DecoderOptions, Instruction, MemorySize, Mnemonic, OpKind, Register,
 };
 
-pub struct ProgramOffset(u64);
-pub type Program = Vec<(ProgramOffset, IRInst)>;
+pub type Program = Vec<(usize, IRInst)>;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum NativeFlag {
@@ -44,7 +43,6 @@ pub enum IRExpr {
 
     // Native
     Reg(Register),
-    Addr(usize),
     Flag(NativeFlag),
 
     // Consts
@@ -105,11 +103,7 @@ fn lift_op(x: Instruction, i: u32) -> IRExpr {
             IRExpr::Deref(Box::new(res))
         }
         OpKind::Register => IRExpr::Reg(x.op_register(i)),
-        OpKind::NearBranch64 => IRExpr::BinOp {
-            kind: IRBinOpKind::Add,
-            lhs: Box::new(IRExpr::Reg(Register::RIP)),
-            rhs: Box::new(IRExpr::CU64(x.near_branch64())),
-        },
+        OpKind::NearBranch64 => IRExpr::CU64(x.near_branch_target()),
         OpKind::Immediate8 => IRExpr::CU8(x.immediate8()),
         _ => {
             panic!("Unimplemented address kind: {:?}", x.op_kind(i));
@@ -353,7 +347,7 @@ pub fn lift_to_irt0(code: &[u8], base_offset: usize) -> Program {
             res.extend(
                 instrs
                     .iter()
-                    .map(|x| (ProgramOffset(instruction.ip()), x.clone())),
+                    .map(|x| (instruction.ip().try_into().unwrap(), x.clone())),
             );
         }
     }
