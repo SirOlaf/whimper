@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
 use crate::irt0::{
-    self,
     ir::{self, IRExpr, IRInst, NativeFlag},
 };
 
@@ -32,7 +31,7 @@ fn gather_flag_ops_from_expr(x: &IRExpr) -> Vec<FlagIR> {
             res.extend(gather_flag_ops_from_expr(rhs));
         }
         IRExpr::Flag(flag) => {
-            _ = res.push(FlagIR::ReadFlag(flag.clone()));
+            res.push(FlagIR::ReadFlag(flag.clone()));
         }
     }
     res
@@ -68,14 +67,13 @@ fn prune_program(program: ir::Program, flag_code: Vec<FlagIR>) -> ir::Program {
     // TODO: Clean up, we do not need another two iterators here
     let mut program = program;
     for f in flag_code {
-        match f {
-            FlagIR::WriteFlag { flag, source_idx } => match &mut program[source_idx].1 {
+        if let FlagIR::WriteFlag { flag, source_idx } = f {
+            match &mut program[source_idx].1 {
                 IRInst::SetFlagsFrom(flags, _) | IRInst::ClearFlags(flags) => {
                     flags.insert(flag);
                 }
                 _ => (),
-            },
-            _ => (),
+            }
         }
     }
 
@@ -83,7 +81,7 @@ fn prune_program(program: ir::Program, flag_code: Vec<FlagIR>) -> ir::Program {
     for instr in program.into_iter() {
         match &instr.1 {
             IRInst::SetFlagsFrom(flags, _) | IRInst::ClearFlags(flags) => {
-                if flags.len() > 0 {
+                if flags.is_empty() {
                     res.push(instr);
                 }
             }
@@ -115,7 +113,7 @@ pub fn tr(program: ir::Program) -> ir::Program {
                     dirty_flags.insert(flag.clone());
                     rev_code.push(FlagIR::WriteFlag {
                         flag,
-                        source_idx: source_idx,
+                        source_idx,
                     });
                 }
             }

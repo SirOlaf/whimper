@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use iced_x86::Register;
 
@@ -43,10 +43,10 @@ fn main() {
                 }
             }
             IRExpr::Reg(reg) => match reg {
-                Register::RIP => offset.clone(),
+                Register::RIP => *offset,
                 _ => panic!("Unimplemented: {:?}", reg),
             },
-            IRExpr::CU64(c) => c.clone().try_into().unwrap(),
+            IRExpr::CU64(c) => (*c).try_into().unwrap(),
             _ => panic!("Unimplemented: {:?}", expr),
         }
     }
@@ -84,10 +84,8 @@ fn main() {
                 analyze_expression(lhs, live_flags, external_flags);
                 analyze_expression(rhs, live_flags, external_flags);
             }
-            IRExpr::Flag(flag) => {
-                if !live_flags.contains(flag) {
-                    external_flags.insert(flag.clone());
-                }
+            IRExpr::Flag(flag) if !live_flags.contains(flag) => {
+                external_flags.insert(flag.clone());
             }
             _ => {}
         }
@@ -115,7 +113,7 @@ fn main() {
         }
         Partition {
             entry_point: *entry,
-            external_flags: external_flags,
+            external_flags,
         }
     }
 
@@ -124,6 +122,6 @@ fn main() {
     }
 
     for p in partitions {
-        assert!(p.external_flags.len() == 0);
+        assert!(p.external_flags.is_empty());
     }
 }
