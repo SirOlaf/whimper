@@ -6,21 +6,61 @@ use std::collections::{HashMap, HashSet};
 use iced_x86::Register;
 
 use crate::irt0::ir::{
-    IRBinOpKind, IRExpr, IRInst as IRT0Inst, NativeFlag, Program as IRT0Program,
+    IRBinOpKind as IRT0BinOpKind, IRExpr as IRT0Expr, IRInst as IRT0Inst, NativeFlag,
+    Program as IRT0Program,
 };
 
 use self::ir::{
-    IRExpr as IRT1Expr, IRInst, Program, SyntheticFunction, SyntheticFunctionId, VariableId,
+    IRBinOpKind, IRExpr, IRInst, Program, SyntheticFunction, SyntheticFunctionId, VariableId,
     VariableType,
 };
 
-fn jump_target(expr: &IRExpr, offset: usize) -> Option<usize> {
+fn lift_expr(expr: IRT0Expr) -> IRExpr {
     match expr {
-        IRExpr::CU64(value) => usize::try_from(*value).ok(),
-        IRExpr::CU32(value) => usize::try_from(*value).ok(),
-        IRExpr::Reg(Register::RIP) => Some(offset),
-        IRExpr::BinOp {
-            kind: IRBinOpKind::Add,
+        IRT0Expr::BinOp { kind, lhs, rhs } => {
+            let lhs = Box::new(lift_expr(*lhs));
+            let rhs = Box::new(lift_expr(*rhs));
+            match kind {
+                IRT0BinOpKind::Add => IRExpr::BinOp {
+                    kind: IRBinOpKind::Add,
+                    lhs,
+                    rhs,
+                },
+                IRT0BinOpKind::Sub => IRExpr::BinOp {
+                    kind: IRBinOpKind::Sub,
+                    lhs,
+                    rhs,
+                },
+                IRT0BinOpKind::Shl => IRExpr::BinOp {
+                    kind: IRBinOpKind::Shl,
+                    lhs,
+                    rhs,
+                },
+                IRT0BinOpKind::And => IRExpr::BinOp {
+                    kind: IRBinOpKind::And,
+                    lhs,
+                    rhs,
+                },
+                IRT0BinOpKind::Or => IRExpr::Or(lhs, rhs),
+                IRT0BinOpKind::Eq => IRExpr::Eq(lhs, rhs),
+            }
+        }
+        IRT0Expr::Deref(inner) => IRExpr::Deref(Box::new(lift_expr(*inner))),
+        IRT0Expr::Reg(reg) => IRExpr::Reg(reg),
+        IRT0Expr::Flag(flag) => IRExpr::Flag(flag),
+        IRT0Expr::CU8(value) => IRExpr::CU8(value),
+        IRT0Expr::CU32(value) => IRExpr::CU32(value),
+        IRT0Expr::CU64(value) => IRExpr::CU64(value),
+    }
+}
+
+fn jump_target(expr: &IRT0Expr, offset: usize) -> Option<usize> {
+    match expr {
+        IRT0Expr::CU64(value) => usize::try_from(*value).ok(),
+        IRT0Expr::CU32(value) => usize::try_from(*value).ok(),
+        IRT0Expr::Reg(Register::RIP) => Some(offset),
+        IRT0Expr::BinOp {
+            kind: IRT0BinOpKind::Add,
             lhs,
             rhs,
         } => jump_target(lhs, offset)?.checked_add(jump_target(rhs, offset)?),
@@ -45,7 +85,7 @@ impl SyntheticFunctionBuilder<'_> {
         (index < self.source.len()).then_some(index)
     }
 
-    fn local_target(&self, expr: &IRExpr, offset: usize) -> Option<usize> {
+    fn local_target(&self, expr: &IRT0Expr, offset: usize) -> Option<usize> {
         let target = jump_target(expr, offset)?;
         if target < self.source.first()?.0 || target > self.source.last()?.0 {
             return None;
@@ -53,12 +93,12 @@ impl SyntheticFunctionBuilder<'_> {
         self.index_at(target)
     }
 
-    fn target(&mut self, expr: &IRExpr, offset: usize) -> IRInst {
+    fn target(&mut self, expr: &IRT0Expr, offset: usize) -> IRInst {
         match self.local_target(expr, offset) {
             Some(index) => IRInst::CallSynthetic {
                 function: self.function(index),
             },
-            None => IRInst::Jump(expr.clone()),
+            None => IRInst::Jump(lift_expr(expr.clone())),
         }
     }
 
@@ -116,7 +156,7 @@ impl SyntheticFunctionBuilder<'_> {
                     body.push((
                         offset,
                         IRInst::If {
-                            condition: IRT1Expr::Native(condition),
+                            condition: lift_expr(condition),
                             then_branch: Box::new(then_branch),
                             else_branch: Box::new(else_branch),
                         },
@@ -128,11 +168,27 @@ impl SyntheticFunctionBuilder<'_> {
                     body.push((offset, target));
                     break;
                 }
-                IRT0Inst::Ret(_) => {
-                    body.push((offset, IRInst::Linear(instr)));
+                IRT0Inst::Ret(value) => {
+                    body.push((offset, IRInst::Return(value.map(lift_expr))));
                     break;
                 }
-                _ => body.push((offset, IRInst::Linear(instr))),
+                IRT0Inst::Asgn { dest, src } => body.push((
+                    offset,
+                    IRInst::Assign {
+                        dest: lift_expr(dest),
+                        src: lift_expr(src),
+                    },
+                )),
+                IRT0Inst::SetFlagsFrom(flags, expr) => body.push((
+                    offset,
+                    IRInst::SetFlagsFrom {
+                        flags,
+                        expr: lift_expr(expr),
+                    },
+                )),
+                IRT0Inst::ClearFlags(flags) => {
+                    body.push((offset, IRInst::ClearFlags { flags }));
+                }
             }
             index += 1;
         }
@@ -145,45 +201,40 @@ impl SyntheticFunctionBuilder<'_> {
 fn condition_flags(expr: &IRExpr, flags: &mut Vec<NativeFlag>) {
     match expr {
         IRExpr::Flag(flag) if !flags.contains(flag) => flags.push(flag.clone()),
-        IRExpr::BinOp { lhs, rhs, .. } => {
+        IRExpr::BinOp { lhs, rhs, .. }
+        | IRExpr::Eq(lhs, rhs)
+        | IRExpr::UnsignedLt(lhs, rhs)
+        | IRExpr::Or(lhs, rhs) => {
             condition_flags(lhs, flags);
             condition_flags(rhs, flags);
         }
-        IRExpr::Deref(inner) => condition_flags(inner, flags),
+        IRExpr::Deref(inner) | IRExpr::Not(inner) => condition_flags(inner, flags),
         _ => {}
     }
 }
 
-fn flag_test(flag: &NativeFlag, expected: u8, slots: &HashMap<NativeFlag, VariableId>) -> IRT1Expr {
-    let slot = IRT1Expr::Variable(slots[flag]);
+fn flag_test(flag: &NativeFlag, expected: u8, slots: &HashMap<NativeFlag, VariableId>) -> IRExpr {
+    let slot = IRExpr::Variable(slots[flag]);
     match expected {
         1 => slot,
-        0 => IRT1Expr::Not(Box::new(slot)),
+        0 => IRExpr::Not(Box::new(slot)),
         _ => panic!("a flag can only be compared with 0 or 1"),
     }
 }
 
-fn lift_condition(expr: IRExpr, slots: &HashMap<NativeFlag, VariableId>) -> IRT1Expr {
+fn lift_condition(expr: IRExpr, slots: &HashMap<NativeFlag, VariableId>) -> IRExpr {
     match expr {
-        IRExpr::Flag(flag) => IRT1Expr::Variable(slots[&flag]),
-        IRExpr::BinOp {
-            kind: IRBinOpKind::Eq,
-            lhs,
-            rhs,
-        } => match (*lhs, *rhs) {
+        IRExpr::Flag(flag) => IRExpr::Variable(slots[&flag]),
+        IRExpr::Eq(lhs, rhs) => match (*lhs, *rhs) {
             (IRExpr::Flag(flag), IRExpr::CU8(value)) | (IRExpr::CU8(value), IRExpr::Flag(flag)) => {
                 flag_test(&flag, value, slots)
             }
-            (lhs, rhs) => IRT1Expr::Eq(
+            (lhs, rhs) => IRExpr::Eq(
                 Box::new(lift_condition(lhs, slots)),
                 Box::new(lift_condition(rhs, slots)),
             ),
         },
-        IRExpr::BinOp {
-            kind: IRBinOpKind::Or,
-            lhs,
-            rhs,
-        } => IRT1Expr::Or(
+        IRExpr::Or(lhs, rhs) => IRExpr::Or(
             Box::new(lift_condition(*lhs, slots)),
             Box::new(lift_condition(*rhs, slots)),
         ),
@@ -191,17 +242,14 @@ fn lift_condition(expr: IRExpr, slots: &HashMap<NativeFlag, VariableId>) -> IRT1
             let mut flags = Vec::new();
             condition_flags(&expr, &mut flags);
             assert!(flags.is_empty(), "unsupported flag condition: {expr:?}");
-            IRT1Expr::Native(expr)
+            expr
         }
     }
 }
 
-fn flag_value(flag: &NativeFlag, expr: &IRExpr) -> IRT1Expr {
+fn flag_value(flag: &NativeFlag, expr: &IRExpr) -> IRExpr {
     match (flag, expr) {
-        (NativeFlag::Zero, _) => IRT1Expr::Eq(
-            Box::new(IRT1Expr::Native(expr.clone())),
-            Box::new(IRT1Expr::Native(IRExpr::CU8(0))),
-        ),
+        (NativeFlag::Zero, _) => IRExpr::Eq(Box::new(expr.clone()), Box::new(IRExpr::CU8(0))),
         (
             NativeFlag::Carry,
             IRExpr::BinOp {
@@ -209,10 +257,7 @@ fn flag_value(flag: &NativeFlag, expr: &IRExpr) -> IRT1Expr {
                 lhs,
                 rhs,
             },
-        ) => IRT1Expr::UnsignedLt(
-            Box::new(IRT1Expr::Native((**lhs).clone())),
-            Box::new(IRT1Expr::Native((**rhs).clone())),
-        ),
+        ) => IRExpr::UnsignedLt(Box::new((**lhs).clone()), Box::new((**rhs).clone())),
         (
             NativeFlag::Carry,
             IRExpr::BinOp {
@@ -220,10 +265,7 @@ fn flag_value(flag: &NativeFlag, expr: &IRExpr) -> IRT1Expr {
                 lhs,
                 ..
             },
-        ) => IRT1Expr::UnsignedLt(
-            Box::new(IRT1Expr::Native(expr.clone())),
-            Box::new(IRT1Expr::Native((**lhs).clone())),
-        ),
+        ) => IRExpr::UnsignedLt(Box::new(expr.clone()), Box::new((**lhs).clone())),
         _ => unimplemented!("cannot express {flag:?} from {expr:?} as a boolean expression"),
     }
 }
@@ -234,11 +276,7 @@ fn lift_conditions(
 ) -> Vec<(usize, IRInst)> {
     let mut flags = Vec::new();
     for (_, instr) in &body {
-        if let IRInst::If {
-            condition: IRT1Expr::Native(condition),
-            ..
-        } = instr
-        {
+        if let IRInst::If { condition, .. } = instr {
             condition_flags(condition, &mut flags);
         }
     }
@@ -251,8 +289,9 @@ fn lift_conditions(
     for flag in flags {
         // The branch is terminal, so the last write in this body is its source.
         let Some(index) = body.iter().rposition(|(_, instr)| match instr {
-            IRInst::Linear(IRT0Inst::SetFlagsFrom(written, _))
-            | IRInst::Linear(IRT0Inst::ClearFlags(written)) => written.contains(&flag),
+            IRInst::SetFlagsFrom { flags, .. } | IRInst::ClearFlags { flags } => {
+                flags.contains(&flag)
+            }
             _ => false,
         }) else {
             unimplemented!(
@@ -284,7 +323,7 @@ fn lift_conditions(
 
     for (index, (offset, instr)) in body.into_iter().enumerate() {
         match instr {
-            IRInst::Linear(IRT0Inst::SetFlagsFrom(written, expr)) => {
+            IRInst::SetFlagsFrom { flags, expr } => {
                 if let Some(assignments) = writes.get(&index) {
                     for (flag, variable) in assignments {
                         lifted.push((
@@ -296,33 +335,27 @@ fn lift_conditions(
                         ));
                     }
                 }
-                lifted.push((
-                    offset,
-                    IRInst::Linear(IRT0Inst::SetFlagsFrom(written, expr)),
-                ));
+                lifted.push((offset, IRInst::SetFlagsFrom { flags, expr }));
             }
-            IRInst::Linear(IRT0Inst::ClearFlags(written)) => {
+            IRInst::ClearFlags { flags } => {
                 if let Some(assignments) = writes.get(&index) {
                     for (_, variable) in assignments {
                         lifted.push((
                             offset,
                             IRInst::AssignVariable {
                                 variable: *variable,
-                                value: IRT1Expr::Bool(false),
+                                value: IRExpr::Bool(false),
                             },
                         ));
                     }
                 }
-                lifted.push((offset, IRInst::Linear(IRT0Inst::ClearFlags(written))));
+                lifted.push((offset, IRInst::ClearFlags { flags }));
             }
             IRInst::If {
                 condition,
                 then_branch,
                 else_branch,
             } => {
-                let IRT1Expr::Native(condition) = condition else {
-                    unreachable!("conditions have not been lifted yet")
-                };
                 lifted.push((
                     offset,
                     IRInst::If {

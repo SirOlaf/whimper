@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
-use crate::irt0::ir::{IRExpr as IRT0Expr, IRInst as IRT0Inst, NativeFlag};
+use iced_x86::Register;
+
+use crate::irt0::ir::NativeFlag;
 
 #[derive(Debug, Clone)]
 pub struct Program {
@@ -36,8 +38,26 @@ pub enum VariableType {
 }
 
 #[derive(Debug, Clone)]
+pub enum IRBinOpKind {
+    Add,
+    Sub,
+    Shl,
+    And,
+}
+
+#[derive(Debug, Clone)]
 pub enum IRExpr {
-    Native(IRT0Expr),
+    BinOp {
+        kind: IRBinOpKind,
+        lhs: Box<IRExpr>,
+        rhs: Box<IRExpr>,
+    },
+    Deref(Box<IRExpr>),
+    Reg(Register),
+    Flag(NativeFlag),
+    CU8(u8),
+    CU32(u32),
+    CU64(u64),
     Variable(VariableId),
     Bool(bool),
     Eq(Box<IRExpr>, Box<IRExpr>),
@@ -48,8 +68,18 @@ pub enum IRExpr {
 
 #[derive(Debug, Clone)]
 pub enum IRInst {
-    /// A tier 0 instruction that does not branch.
-    Linear(IRT0Inst),
+    Assign {
+        dest: IRExpr,
+        src: IRExpr,
+    },
+    SetFlagsFrom {
+        flags: HashSet<NativeFlag>,
+        expr: IRExpr,
+    },
+    ClearFlags {
+        flags: HashSet<NativeFlag>,
+    },
+    Return(Option<IRExpr>),
 
     DeclareVariable {
         variable: VariableId,
@@ -73,7 +103,7 @@ pub enum IRInst {
     },
 
     /// A jump outside the locally lifted function.
-    Jump(IRT0Expr),
+    Jump(IRExpr),
 
     /// The source ends without another instruction.
     End,
