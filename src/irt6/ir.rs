@@ -64,6 +64,9 @@ pub enum VariableType {
     UnknownPointer,
     /// A pointer whose pointee type is supported by tier 6 evidence.
     Pointer(Box<VariableType>),
+    /// An address of homogeneous elements with unknown length. This is not
+    /// an owning container and implies neither a capacity nor bounds checks.
+    Vector(Box<VariableType>),
     /// A struct definition in this tier's program.
     Struct(StructId),
     Bool,
@@ -135,6 +138,14 @@ pub enum IRExpr {
         address: Box<IRExpr>,
         /// Memory access width in bytes, not the pointee type's size.
         size: Option<usize>,
+    },
+    /// Address of an element, without reading it. Address arithmetic wraps
+    /// at 64 bits; `index` retains its original integer conversions.
+    ElementAddress {
+        base: Box<IRExpr>,
+        index: Box<IRExpr>,
+        /// Both the element stride and memory access width, in bytes.
+        element_size: usize,
     },
     Argument(usize),
     /// Numeric conversion: interpret the input using `source`, then convert

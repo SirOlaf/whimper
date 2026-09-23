@@ -31,6 +31,7 @@ fn variable_type(ty: t5::VariableType) -> VariableType {
         t5::VariableType::Bool => VariableType::Bool,
         t5::VariableType::UnknownPointer => VariableType::UnknownPointer,
         t5::VariableType::Pointer(inner) => VariableType::Pointer(Box::new(variable_type(*inner))),
+        t5::VariableType::Vector(inner) => VariableType::Vector(Box::new(variable_type(*inner))),
         t5::VariableType::Struct(id) => VariableType::Struct(StructId { id: id.id }),
         t5::VariableType::Integer(bits) => VariableType::Integer(bits),
         t5::VariableType::UnsignedInteger(bits) => VariableType::UnsignedInteger(bits),
@@ -79,6 +80,15 @@ fn expression(expr: &t5::IRExpr) -> IRExpr {
         t5::IRExpr::MemoryAddress { address, size } => IRExpr::MemoryAddress {
             address: Box::new(expression(address)),
             size: *size,
+        },
+        t5::IRExpr::ElementAddress {
+            base,
+            index,
+            element_size,
+        } => IRExpr::ElementAddress {
+            base: Box::new(expression(base)),
+            index: Box::new(expression(index)),
+            element_size: *element_size,
         },
         t5::IRExpr::Argument(ordinal) => IRExpr::Argument(*ordinal),
         t5::IRExpr::Convert {

@@ -1,4 +1,4 @@
-//! Infer integer, pointer, and struct slots from decisive access shapes.
+//! Infer integer, pointer, struct, and vector slots from decisive access shapes.
 //! Copies and synthetic calls carry that evidence across slots of equal width.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -74,6 +74,19 @@ struct FieldEvidence {
     type_conflict: bool,
 }
 
+#[derive(Clone, Default, PartialEq, Eq)]
+struct ArrayEvidence {
+    element: FieldEvidence,
+    unsupported: bool,
+}
+
+impl ArrayEvidence {
+    fn merge(&mut self, other: &Self) {
+        self.element.merge(&other.element);
+        self.unsupported |= other.unsupported;
+    }
+}
+
 impl FieldEvidence {
     fn merge(&mut self, other: &Self) {
         if self.size_conflict || other.size_conflict {
@@ -126,6 +139,7 @@ struct Analysis {
     pointer_uses: HashMap<Slot, PointerUse>,
     derived_addresses: Vec<(Slot, Slot, Option<usize>)>,
     pointees: HashMap<Slot, PointeeEvidence>,
+    arrays: HashMap<Slot, ArrayEvidence>,
     fields: HashMap<Slot, BTreeMap<usize, FieldEvidence>>,
     field_links: HashSet<FieldLink>,
     field_slot_types: HashMap<Slot, PointeeEvidence>,
@@ -167,7 +181,9 @@ fn pointee_width(ty: &VariableType) -> Option<usize> {
 
 fn value_width(ty: &VariableType) -> Option<usize> {
     match ty {
-        VariableType::Pointer(_) | VariableType::UnknownPointer => Some(8),
+        VariableType::Pointer(_) | VariableType::Vector(_) | VariableType::UnknownPointer => {
+            Some(8)
+        }
         VariableType::Unknown(size) => *size,
         _ => pointee_width(ty),
     }
@@ -247,7 +263,203 @@ impl Analysis {
         }
     }
 
+    fn array_address<'a>(
+        &self,
+        expr: &'a IRExpr,
+        owner: SyntheticFunctionId,
+    ) -> Option<(&'a IRExpr, IRExpr)> {
+        if let Some((base, offset)) = field_address(expr) {
+            return Some((base, IRExpr::CU64(offset as u64)));
+        }
+        if let IRExpr::MemoryAddress { address, .. } = expr {
+            return self.array_address(address, owner);
+        }
+        let (base, offset) = self.address_base(expr, owner)?;
+        direct_slot(base, owner)?;
+        Some((base, offset.clone()))
+    }
+
+    fn offset_width(&self, expr: &IRExpr, owner: SyntheticFunctionId) -> Option<usize> {
+        if let Some(size) = literal_size(expr) {
+            return Some(size);
+        }
+        if let Some(slot) = direct_slot(expr, owner) {
+            return pointee_width(&self.inferred(slot, self.types.get(&slot)?.clone()));
+        }
+        match expr {
+            IRExpr::Convert { target, .. } => Some(target.size),
+            _ => None,
+        }
+    }
+
+    fn element_index(
+        &self,
+        offset: &IRExpr,
+        size: usize,
+        owner: SyntheticFunctionId,
+    ) -> Option<IRExpr> {
+        let constant = |expr: &IRExpr| match expr {
+            IRExpr::CU8(value) => Some(*value as u64),
+            IRExpr::CU32(value) => Some(*value as u64),
+            IRExpr::CU64(value) => Some(*value),
+            _ => None,
+        };
+        if size == 1 {
+            return Some(offset.clone());
+        }
+        if let Some(value) = constant(offset) {
+            return value
+                .is_multiple_of(size as u64)
+                .then_some(IRExpr::CU64(value / size as u64));
+        }
+        // Removing a scale is valid only when it was computed at the address
+        // width. A narrow multiply can wrap before it becomes an address.
+        let IRExpr::BinOp { kind, lhs, rhs } = offset else {
+            return None;
+        };
+        match kind {
+            IRBinOpKind::Mul => {
+                for (index, scale) in [(lhs, rhs), (rhs, lhs)] {
+                    if constant(scale) == Some(size as u64)
+                        && self.offset_width(index, owner) == Some(8)
+                    {
+                        return Some(index.as_ref().clone());
+                    }
+                }
+                None
+            }
+            IRBinOpKind::Shl
+                if constant(rhs) == Some(size.trailing_zeros() as u64)
+                    && self.offset_width(lhs, owner) == Some(8) =>
+            {
+                Some(lhs.as_ref().clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn disqualify_array_address(&mut self, expr: &IRExpr, owner: SyntheticFunctionId) {
+        if let Some(slot) = direct_slot(expr, owner) {
+            self.arrays.entry(slot).or_default().unsupported = true;
+        }
+        match expr {
+            IRExpr::BinOp { lhs, rhs, .. }
+            | IRExpr::ElementAddress {
+                base: lhs,
+                index: rhs,
+                ..
+            } => {
+                self.disqualify_array_address(lhs, owner);
+                self.disqualify_array_address(rhs, owner);
+            }
+            IRExpr::Deref(inner)
+            | IRExpr::MemoryAddress { address: inner, .. }
+            | IRExpr::Convert { value: inner, .. }
+            | IRExpr::Not(inner) => self.disqualify_array_address(inner, owner),
+            _ => {}
+        }
+    }
+
+    fn record_array_access(
+        &mut self,
+        address: &IRExpr,
+        ty: Option<VariableType>,
+        owner: SyntheticFunctionId,
+    ) {
+        let Some((base, offset)) = self.array_address(address, owner) else {
+            self.disqualify_array_address(address, owner);
+            return;
+        };
+        let Some(slot) = direct_slot(base, owner).filter(|slot| self.width(*slot) == Some(8))
+        else {
+            return;
+        };
+        let size = match address {
+            IRExpr::MemoryAddress { size, .. } => *size,
+            _ => None,
+        };
+        let supported = size.is_some_and(|size| {
+            matches!(size, 1 | 2 | 4 | 8) && self.element_index(&offset, size, owner).is_some()
+        });
+        let type_conflict = ty.as_ref().is_some_and(|ty| value_width(ty) != size);
+        self.arrays.entry(slot).or_default().merge(&ArrayEvidence {
+            element: FieldEvidence {
+                size,
+                candidate: ty,
+                type_conflict,
+                ..FieldEvidence::default()
+            },
+            unsupported: !supported,
+        });
+    }
+
+    fn propagate_arrays(&mut self) {
+        loop {
+            let mut changed = false;
+            for &(dest, src) in &self.copies {
+                let mut merged = self.arrays.get(&dest).cloned().unwrap_or_default();
+                merged.merge(&self.arrays.get(&src).cloned().unwrap_or_default());
+                for slot in [dest, src] {
+                    if self.arrays.get(&slot) != Some(&merged) {
+                        self.arrays.insert(slot, merged.clone());
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    fn recover_array_expression(&self, expr: &mut IRExpr, owner: SyntheticFunctionId) {
+        match expr {
+            IRExpr::BinOp { lhs, rhs, .. }
+            | IRExpr::ElementAddress {
+                base: lhs,
+                index: rhs,
+                ..
+            } => {
+                self.recover_array_expression(lhs, owner);
+                self.recover_array_expression(rhs, owner);
+            }
+            IRExpr::Deref(inner)
+            | IRExpr::MemoryAddress { address: inner, .. }
+            | IRExpr::Convert { value: inner, .. }
+            | IRExpr::Not(inner) => self.recover_array_expression(inner, owner),
+            _ => {}
+        }
+        let IRExpr::MemoryAddress {
+            size: Some(size), ..
+        } = expr
+        else {
+            return;
+        };
+        let size = *size;
+        let Some((base, offset)) = self.array_address(expr, owner) else {
+            return;
+        };
+        let Some(slot) = direct_slot(base, owner) else {
+            return;
+        };
+        let Some(original) = self.types.get(&slot) else {
+            return;
+        };
+        if matches!(
+            self.inferred_type(slot, original.clone()),
+            VariableType::Vector(_)
+        ) && let Some(index) = self.element_index(&offset, size, owner)
+        {
+            *expr = IRExpr::ElementAddress {
+                base: Box::new(base.clone()),
+                index: Box::new(index),
+                element_size: size,
+            };
+        }
+    }
+
     fn pointer_address(&mut self, expr: &IRExpr, owner: SyntheticFunctionId) {
+        self.record_array_access(expr, None, owner);
         if let Some((base, offset)) = field_address(expr)
             && let Some(slot) = direct_slot(base, owner)
             && self.width(slot) == Some(8)
@@ -297,6 +509,10 @@ impl Analysis {
         }
         match expr {
             IRExpr::Deref(address) => self.pointer_address(address, owner),
+            IRExpr::ElementAddress { base, index, .. } => {
+                self.pointer_address_uses(base, owner);
+                self.pointer_value(index, owner);
+            }
             IRExpr::BinOp { lhs, rhs, .. } => {
                 self.pointer_value(lhs, owner);
                 self.pointer_value(rhs, owner);
@@ -320,6 +536,9 @@ impl Analysis {
             && let Some(src) = direct_slot(base, owner)
             && self.width(src) == Some(8)
         {
+            // A separately computed address needs its own stride proof. Keep
+            // the base as a pointer until that relationship is recovered.
+            self.arrays.entry(src).or_default().unsupported = true;
             self.derived_addresses.push((
                 dest,
                 src,
@@ -337,6 +556,10 @@ impl Analysis {
             return;
         }
         match expr {
+            IRExpr::ElementAddress { base, index, .. } => {
+                self.address(base, owner);
+                self.expression(index, owner);
+            }
             IRExpr::BinOp { lhs, rhs, .. } => {
                 self.address(lhs, owner);
                 self.address(rhs, owner);
@@ -354,6 +577,10 @@ impl Analysis {
 
     fn expression(&mut self, expr: &IRExpr, owner: SyntheticFunctionId) {
         match expr {
+            IRExpr::ElementAddress { base, index, .. } => {
+                self.address(base, owner);
+                self.expression(index, owner);
+            }
             IRExpr::BinOp { kind, lhs, rhs } => {
                 match kind {
                     IRBinOpKind::Mul
@@ -662,7 +889,8 @@ impl Analysis {
             | VariableType::Integer(_)
             | VariableType::UnsignedInteger(_)
             | VariableType::UnknownPointer
-            | VariableType::Pointer(_) => Some(inferred),
+            | VariableType::Pointer(_)
+            | VariableType::Vector(_) => Some(inferred),
             _ => None,
         }
     }
@@ -673,6 +901,7 @@ impl Analysis {
         ty: VariableType,
         owner: SyntheticFunctionId,
     ) {
+        self.record_array_access(address, Some(ty.clone()), owner);
         let Some((base, offset)) = field_address(address) else {
             return;
         };
@@ -1058,6 +1287,15 @@ impl Analysis {
             .get(&slot)
             .is_some_and(|evidence| evidence.integer);
         if uses.dereferenced && !uses.other && !integer {
+            if uses.indexed
+                && let Some(array) = self.arrays.get(&slot)
+                && !array.unsupported
+                && !array.element.size_conflict
+                && !array.element.type_conflict
+                && array.element.size.is_some()
+            {
+                return VariableType::Vector(Box::new(array.element.ty()));
+            }
             self.pointees
                 .get(&slot)
                 .and_then(|evidence| evidence.candidate.clone())
@@ -1113,25 +1351,48 @@ impl Analysis {
     }
 }
 
-fn retype(instr: &mut IRInst, analysis: &Analysis) {
+fn retype(instr: &mut IRInst, analysis: &Analysis, owner: SyntheticFunctionId) {
     match instr {
         IRInst::DeclareVariable { variable, ty }
         | IRInst::DeclareAndAssignVariable { variable, ty, .. } => {
             let slot = Slot::Variable(*variable);
             *ty = analysis.inferred_type(slot, ty.clone());
-        }
-        IRInst::If {
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            for instr in then_branch.iter_mut().chain(else_branch) {
-                retype(instr, analysis);
+            if let IRInst::DeclareAndAssignVariable { value, .. } = instr {
+                analysis.recover_array_expression(value, owner);
             }
         }
-        IRInst::While { body, .. } => {
+        IRInst::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            analysis.recover_array_expression(condition, owner);
+            for instr in then_branch.iter_mut().chain(else_branch) {
+                retype(instr, analysis, owner);
+            }
+        }
+        IRInst::While {
+            condition, body, ..
+        } => {
+            let (LoopCondition::Before { expression, .. }
+            | LoopCondition::After { expression, .. }) = condition;
+            analysis.recover_array_expression(expression, owner);
             for (_, instr) in body {
-                retype(instr, analysis);
+                retype(instr, analysis, owner);
+            }
+        }
+        IRInst::Assign { dest, src } => {
+            analysis.recover_array_expression(dest, owner);
+            analysis.recover_array_expression(src, owner);
+        }
+        IRInst::AssignVariable { value, .. }
+        | IRInst::LoadVariable { address: value, .. }
+        | IRInst::StoreVariable { address: value, .. }
+        | IRInst::Return(Some(value))
+        | IRInst::Jump(value) => analysis.recover_array_expression(value, owner),
+        IRInst::CallSynthetic { arguments, .. } => {
+            for argument in arguments {
+                analysis.recover_array_expression(argument, owner);
             }
         }
         _ => {}
@@ -1244,6 +1505,7 @@ pub fn run(program: &mut Program) {
         }
     }
     analysis.propagate_pointer_uses();
+    analysis.propagate_arrays();
     analysis.propagate_fields();
     analysis.assign_struct_ids(program.structs.len());
     for (index, function) in program.functions.iter().enumerate() {
@@ -1253,6 +1515,7 @@ pub fn run(program: &mut Program) {
         }
     }
     analysis.propagate_pointees();
+    analysis.propagate_arrays();
     // Pointee evidence can turn a loaded value into a typed pointer. Revisit
     // memory transfers so those pointer types become field types as well.
     for (index, function) in program.functions.iter().enumerate() {
@@ -1263,6 +1526,7 @@ pub fn run(program: &mut Program) {
     }
     analysis.propagate_fields();
     analysis.propagate_field_types_to_slots();
+    analysis.propagate_arrays();
     let definitions = analysis.struct_definitions(&program.structs);
     program.structs.extend(definitions);
     for (index, function) in program.functions.iter_mut().enumerate() {
@@ -1280,7 +1544,7 @@ pub fn run(program: &mut Program) {
             }
         }
         for (_, instr) in &mut function.body {
-            retype(instr, &analysis);
+            retype(instr, &analysis, owner);
         }
     }
 }

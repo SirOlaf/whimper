@@ -30,6 +30,10 @@ impl Effects {
                 self.memory_read = true;
                 self.expression(address);
             }
+            IRExpr::ElementAddress { base, index, .. } => {
+                self.expression(base);
+                self.expression(index);
+            }
             IRExpr::MemoryAddress { address: inner, .. }
             | IRExpr::Convert { value: inner, .. }
             | IRExpr::Not(inner) => self.expression(inner),

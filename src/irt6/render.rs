@@ -120,7 +120,7 @@ impl<'a> RenderTypes<'a> {
     fn pointer_address(&self, expr: &IRExpr) -> bool {
         if matches!(
             self.direct_type(expr),
-            Some(VariableType::UnknownPointer | VariableType::Pointer(_))
+            Some(VariableType::UnknownPointer | VariableType::Pointer(_) | VariableType::Vector(_))
         ) {
             return true;
         }
@@ -168,6 +168,7 @@ fn type_name(ty: VariableType, structs: &[StructDefinition]) -> String {
         VariableType::Unknown(None) => "Unknown".to_string(),
         VariableType::UnknownPointer => "Unknown*".to_string(),
         VariableType::Pointer(pointee) => format!("{}*", type_name(*pointee, structs)),
+        VariableType::Vector(element) => format!("vec<{}>", type_name(*element, structs)),
         VariableType::Struct(id) => structs.get(id.id).map_or_else(
             || format!("AStruct{}", id.id),
             |definition| definition.name.clone(),
@@ -179,7 +180,13 @@ fn type_name(ty: VariableType, structs: &[StructDefinition]) -> String {
 }
 
 fn dereference(address: &IRExpr, types: &RenderTypes) -> String {
-    if let Some((base, offset)) = types.struct_field(address) {
+    if let IRExpr::ElementAddress { base, index, .. } = address {
+        format!(
+            "{}[{}]",
+            expression(base, 10, types),
+            expression(index, 0, types)
+        )
+    } else if let Some((base, offset)) = types.struct_field(address) {
         format!("{}->_0x{offset:x}", expression(base, 9, types))
     } else {
         format!("*({})", expression(address, 0, types))
@@ -223,7 +230,10 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 8,
         IRExpr::BinOp { .. } => 7,
-        IRExpr::Not(..) | IRExpr::Deref(..) | IRExpr::MemoryAddress { .. } => 9,
+        IRExpr::Not(..)
+        | IRExpr::Deref(..)
+        | IRExpr::MemoryAddress { .. }
+        | IRExpr::ElementAddress { .. } => 9,
         _ => 10,
     }
 }
@@ -276,6 +286,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> Stri
             )
         }
         IRExpr::Deref(address) => dereference(address, types),
+        IRExpr::ElementAddress { .. } => format!("&{}", dereference(expr, types)),
         IRExpr::MemoryAddress { address, .. } => {
             format!("(Unknown*)({})", expression(address, 0, types))
         }

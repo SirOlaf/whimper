@@ -20,6 +20,15 @@ padding. `--entry` selects the PE entry point.
 Use `--tier 1` through `--tier 6` to inspect a tier directly; add
 `--address-comments` to retain source addresses in the rendered view.
 
+Tier 5 recovers unknown-length arrays from dynamic memory accesses with a clear
+base, consistent element widths and types, and compatible index scaling. The
+default function's byte accesses infer `arg1: vec<i8>` and render as
+`arg1[0x0]`, `arg1[0x1]`, and `arg1[u64(v2)]`. Here `vec<T>` describes an address
+of elements; it does not imply ownership, a known length, or bounds checks.
+Conflicting accesses, ambiguous bases, and unsupported address calculations
+retain their pointer representation. Tier 6 translates the recovered element
+addresses into its own IR, preserving access widths and integer conversions.
+
 The IR lifter still supports only a small subset of x86_64 instructions, so
 selecting arbitrary functions may fail. External jumps are not yet resolved as
 tail calls; the full image is now available for that analysis.

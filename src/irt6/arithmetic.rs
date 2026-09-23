@@ -210,10 +210,10 @@ impl Context {
             IRExpr::Not(inner) if repeatable(expr) => self.with_bindings(inner, bindings).negated(),
             IRExpr::Convert { target, .. } => atom(access_bits(target.size)),
             IRExpr::Deref(address) => {
-                let bits = if let IRExpr::MemoryAddress { size, .. } = address.as_ref() {
-                    size.and_then(access_bits)
-                } else {
-                    None
+                let bits = match address.as_ref() {
+                    IRExpr::MemoryAddress { size, .. } => size.and_then(access_bits),
+                    IRExpr::ElementAddress { element_size, .. } => access_bits(*element_size),
+                    _ => None,
                 };
                 atom(bits)
             }

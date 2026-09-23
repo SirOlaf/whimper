@@ -49,15 +49,34 @@ struct Facts {
 }
 
 fn access(address: &IRExpr) -> Option<(&IRExpr, usize, usize)> {
-    let IRExpr::MemoryAddress {
-        address,
-        size: Some(size),
-    } = address
-    else {
-        return None;
+    let (base, offset, size) = match address {
+        IRExpr::MemoryAddress {
+            address,
+            size: Some(size),
+        } => {
+            let (base, offset) = field_address(address)?;
+            (base, offset, *size)
+        }
+        IRExpr::ElementAddress {
+            base,
+            index,
+            element_size,
+        } => {
+            let index = match index.as_ref() {
+                IRExpr::CU8(value) => *value as usize,
+                IRExpr::CU32(value) => *value as usize,
+                IRExpr::CU64(value) => usize::try_from(*value).ok()?,
+                _ => return None,
+            };
+            (
+                base.as_ref(),
+                index.checked_mul(*element_size)?,
+                *element_size,
+            )
+        }
+        _ => return None,
     };
-    let (base, offset) = field_address(address)?;
-    Some((base, offset, offset.checked_add(*size)?))
+    Some((base, offset, offset.checked_add(size)?))
 }
 
 fn disjoint_accesses(left: &IRExpr, right: &IRExpr) -> bool {
@@ -221,7 +240,12 @@ const RULES: &[Rule] = &[
 
 fn simplify_boolean_expression(expr: &mut IRExpr) -> bool {
     let mut changed = match expr {
-        IRExpr::BinOp { lhs, rhs, .. } => {
+        IRExpr::BinOp { lhs, rhs, .. }
+        | IRExpr::ElementAddress {
+            base: lhs,
+            index: rhs,
+            ..
+        } => {
             let left_changed = simplify_boolean_expression(lhs);
             let right_changed = simplify_boolean_expression(rhs);
             left_changed || right_changed
