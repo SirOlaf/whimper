@@ -16,7 +16,8 @@ struct RenderTypes {
 impl RenderTypes {
     fn collect_instruction(&mut self, instr: &IRInst) {
         match instr {
-            IRInst::DeclareVariable { variable, ty } => {
+            IRInst::DeclareVariable { variable, ty }
+            | IRInst::DeclareAndAssignVariable { variable, ty, .. } => {
                 self.variables.insert(*variable, *ty);
             }
             IRInst::If {
@@ -242,6 +243,20 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize, types: &Rende
         IRInst::DeclareVariable { variable, ty } => {
             let ty = type_name(*ty);
             writeln!(output, "{padding}let {}: {ty};", variable_name(*variable)).unwrap();
+        }
+        IRInst::DeclareAndAssignVariable {
+            variable,
+            ty,
+            value,
+        } => {
+            let ty = type_name(*ty);
+            writeln!(
+                output,
+                "{padding}let {}: {ty} = {};",
+                variable_name(*variable),
+                expression(value, 0, types)
+            )
+            .unwrap();
         }
         IRInst::AssignVariable { variable, value } => {
             writeln!(

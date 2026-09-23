@@ -288,6 +288,11 @@ impl Analysis {
     fn instruction(&mut self, instr: &IRInst, owner: SyntheticFunctionId) {
         match instr {
             IRInst::DeclareVariable { .. } => {}
+            IRInst::DeclareAndAssignVariable {
+                variable, value, ..
+            } => {
+                self.assignment(Slot::Variable(*variable), value, owner);
+            }
             IRInst::Assign { dest, src } => {
                 if let Some(slot) = direct_slot(dest, owner) {
                     self.assignment(slot, src, owner);
@@ -352,6 +357,11 @@ impl Analysis {
     ) {
         match instr {
             IRInst::DeclareVariable { .. } => {}
+            IRInst::DeclareAndAssignVariable {
+                variable, value, ..
+            } => {
+                self.pointer_assignment(Slot::Variable(*variable), value, owner);
+            }
             IRInst::Assign { dest, src } => {
                 if let Some(slot) = direct_slot(dest, owner) {
                     self.pointer_assignment(slot, src, owner);
@@ -560,7 +570,8 @@ impl Analysis {
 
 fn retype(instr: &mut IRInst, analysis: &Analysis) {
     match instr {
-        IRInst::DeclareVariable { variable, ty } => {
+        IRInst::DeclareVariable { variable, ty }
+        | IRInst::DeclareAndAssignVariable { variable, ty, .. } => {
             let slot = Slot::Variable(*variable);
             *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, *ty));
         }
@@ -584,7 +595,8 @@ fn retype(instr: &mut IRInst, analysis: &Analysis) {
 
 fn declarations(instr: &IRInst, analysis: &mut Analysis) {
     match instr {
-        IRInst::DeclareVariable { variable, ty } => {
+        IRInst::DeclareVariable { variable, ty }
+        | IRInst::DeclareAndAssignVariable { variable, ty, .. } => {
             analysis.types.insert(Slot::Variable(*variable), *ty);
         }
         IRInst::If {

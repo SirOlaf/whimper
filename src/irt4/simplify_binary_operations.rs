@@ -75,6 +75,7 @@ fn simplify_instruction(instr: &mut IRInst) {
             simplify_expression(src);
         }
         IRInst::AssignVariable { value, .. }
+        | IRInst::DeclareAndAssignVariable { value, .. }
         | IRInst::Return(Some(value))
         | IRInst::Jump(value) => {
             simplify_expression(value);

@@ -131,6 +131,24 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
             };
             writeln!(output, "{padding}let {}: {ty};", variable_name(*variable)).unwrap();
         }
+        IRInst::DeclareAndAssignVariable {
+            variable,
+            ty,
+            value,
+        } => {
+            let ty = match ty {
+                VariableType::Unknown(Some(size)) => format!("Unknown<{size}>"),
+                VariableType::Unknown(None) => "Unknown".to_string(),
+                VariableType::Bool => "Bool".to_string(),
+            };
+            writeln!(
+                output,
+                "{padding}let {}: {ty} = {};",
+                variable_name(*variable),
+                expression(value, 0)
+            )
+            .unwrap();
+        }
         IRInst::AssignVariable { variable, value } => {
             writeln!(
                 output,

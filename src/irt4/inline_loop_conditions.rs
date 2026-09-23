@@ -61,6 +61,17 @@ fn collect(instr: &IRInst, usage: &mut HashMap<VariableId, Usage>) {
             ty: VariableType::Bool,
         } => usage.entry(*variable).or_default().boolean = true,
         IRInst::DeclareVariable { .. } => {}
+        IRInst::DeclareAndAssignVariable {
+            variable,
+            ty,
+            value,
+        } => {
+            if *ty == VariableType::Bool {
+                usage.entry(*variable).or_default().boolean = true;
+            }
+            read_expression(value, usage);
+            usage.entry(*variable).or_default().writes += 1;
+        }
         IRInst::AssignVariable { variable, value } => {
             read_expression(value, usage);
             usage.entry(*variable).or_default().writes += 1;
@@ -163,7 +174,8 @@ fn effect_free(expr: &IRExpr) -> bool {
 
 fn declares_input(instr: &IRInst, inputs: &HashSet<VariableId>) -> bool {
     match instr {
-        IRInst::DeclareVariable { variable, .. } => inputs.contains(variable),
+        IRInst::DeclareVariable { variable, .. }
+        | IRInst::DeclareAndAssignVariable { variable, .. } => inputs.contains(variable),
         IRInst::If {
             then_branch,
             else_branch,

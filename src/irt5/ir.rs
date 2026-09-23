@@ -124,6 +124,11 @@ pub enum IRInst {
         variable: VariableId,
         ty: VariableType,
     },
+    DeclareAndAssignVariable {
+        variable: VariableId,
+        ty: VariableType,
+        value: IRExpr,
+    },
     AssignVariable {
         variable: VariableId,
         value: IRExpr,

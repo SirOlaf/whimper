@@ -131,7 +131,10 @@ fn operation(instr: &IRInst) -> Operation {
                 reads(dest, &mut op.dependencies);
             }
         }
-        IRInst::AssignVariable { variable, value } => {
+        IRInst::AssignVariable { variable, value }
+        | IRInst::DeclareAndAssignVariable {
+            variable, value, ..
+        } => {
             reads(value, &mut op.dependencies);
             op.write = Some(*variable);
             op.offset = offset(value);

@@ -9,7 +9,8 @@ use super::variable_flow::Flow;
 
 fn declarations(instr: &IRInst, types: &mut HashMap<VariableId, VariableType>) {
     match instr {
-        IRInst::DeclareVariable { variable, ty } => {
+        IRInst::DeclareVariable { variable, ty }
+        | IRInst::DeclareAndAssignVariable { variable, ty, .. } => {
             types.insert(*variable, *ty);
         }
         IRInst::If {
@@ -39,7 +40,10 @@ fn width(ty: VariableType) -> Option<usize> {
 
 fn assignment(instr: &IRInst, target: VariableId) -> Option<&IRExpr> {
     match instr {
-        IRInst::AssignVariable { variable, value } if *variable == target => Some(value),
+        IRInst::AssignVariable { variable, value }
+        | IRInst::DeclareAndAssignVariable {
+            variable, value, ..
+        } if *variable == target => Some(value),
         IRInst::Assign {
             dest: IRExpr::Variable(variable),
             src,
@@ -247,7 +251,10 @@ fn rewrite(instr: &mut IRInst, target: VariableId, value: &IRExpr) {
                 replace_expression(dest, target, value);
             }
         }
-        IRInst::AssignVariable { value: expr, .. } => replace_expression(expr, target, value),
+        IRInst::AssignVariable { value: expr, .. }
+        | IRInst::DeclareAndAssignVariable { value: expr, .. } => {
+            replace_expression(expr, target, value)
+        }
         IRInst::LoadVariable { address, .. } => replace_expression(address, target, value),
         IRInst::StoreVariable { address, variable } => {
             replace_expression(address, target, value);
@@ -320,7 +327,9 @@ fn remove(instr: &mut IRInst, target: VariableId) {
 
 fn is_removed(instr: &IRInst, target: VariableId) -> bool {
     match instr {
-        IRInst::DeclareVariable { variable, .. } | IRInst::AssignVariable { variable, .. }
+        IRInst::DeclareVariable { variable, .. }
+        | IRInst::AssignVariable { variable, .. }
+        | IRInst::DeclareAndAssignVariable { variable, .. }
             if *variable == target =>
         {
             true
@@ -449,7 +458,10 @@ fn return_value(
     }
     let ty = *types.get(target)?;
     let value = match assignment {
-        IRInst::AssignVariable { variable, value } if variable == target => value.clone(),
+        IRInst::AssignVariable { variable, value }
+        | IRInst::DeclareAndAssignVariable {
+            variable, value, ..
+        } if variable == target => value.clone(),
         IRInst::Assign {
             dest: IRExpr::Variable(variable),
             src,

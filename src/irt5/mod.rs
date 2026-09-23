@@ -128,6 +128,15 @@ fn instruction(instr: &t4::IRInst) -> IRInst {
             variable: variable_id(*variable),
             ty: variable_type(*ty),
         },
+        t4::IRInst::DeclareAndAssignVariable {
+            variable,
+            ty,
+            value,
+        } => IRInst::DeclareAndAssignVariable {
+            variable: variable_id(*variable),
+            ty: variable_type(*ty),
+            value: expression(value),
+        },
         t4::IRInst::AssignVariable { variable, value } => IRInst::AssignVariable {
             variable: variable_id(*variable),
             value: expression(value),
