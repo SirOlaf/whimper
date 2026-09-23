@@ -1,16 +1,5 @@
-use std::collections::HashSet;
-
-use iced_x86::Register;
-
-use crate::irt0::ir::{IRBinOpKind, IRExpr, IRInst, NativeFlag, Program};
-
 mod irt0;
 mod irt1;
-
-struct Partition {
-    entry_point: usize,
-    external_flags: HashSet<NativeFlag>,
-}
 
 fn main() {
     const CODE: &[u8] = &[
@@ -26,102 +15,6 @@ fn main() {
 
     let irt0program = irt0::lift(CODE, base_offset);
 
-    for p in &irt0program {
-        println!("{:?}", p.1);
-    }
-
-    let mut partition_entries: HashSet<usize> = HashSet::new();
-    partition_entries.insert(base_offset);
-    fn try_eval_addr(expr: &IRExpr, offset: &usize) -> usize {
-        match expr {
-            IRExpr::BinOp { kind, lhs, rhs } => {
-                let lhs = try_eval_addr(lhs, offset);
-                let rhs = try_eval_addr(rhs, offset);
-                match kind {
-                    IRBinOpKind::Add => lhs + rhs,
-                    _ => panic!("Unimplemented: {:?}", kind),
-                }
-            }
-            IRExpr::Reg(reg) => match reg {
-                Register::RIP => *offset,
-                _ => panic!("Unimplemented: {:?}", reg),
-            },
-            IRExpr::CU64(c) => (*c).try_into().unwrap(),
-            _ => panic!("Unimplemented: {:?}", expr),
-        }
-    }
-
-    fn handle_instruction(entries: &mut HashSet<usize>, offset: &usize, instr: &IRInst) {
-        match instr {
-            IRInst::If(_, inner) => {
-                handle_instruction(entries, offset, inner);
-            }
-            IRInst::Jmp(expr) => {
-                let target = try_eval_addr(expr, offset);
-                entries.insert(target);
-            }
-            _ => (),
-        }
-    }
-
-    for (offset, instr) in &irt0program {
-        handle_instruction(&mut partition_entries, offset, instr);
-    }
-
-    // Every jump destination is a partition entry point
-    // A partition lasts from entry to jump and defines what flags are local
-    println!("{:?}", partition_entries);
-
-    let mut partitions: Vec<Partition> = Vec::new();
-
-    fn analyze_expression(
-        e: &IRExpr,
-        live_flags: &HashSet<NativeFlag>,
-        external_flags: &mut HashSet<NativeFlag>,
-    ) {
-        match e {
-            IRExpr::BinOp { lhs, rhs, .. } => {
-                analyze_expression(lhs, live_flags, external_flags);
-                analyze_expression(rhs, live_flags, external_flags);
-            }
-            IRExpr::Flag(flag) if !live_flags.contains(flag) => {
-                external_flags.insert(flag.clone());
-            }
-            _ => {}
-        }
-    }
-
-    fn analyze_partition(entry: &usize, program: &Program) -> Partition {
-        let mut live_flags: HashSet<NativeFlag> = HashSet::new();
-        let mut external_flags: HashSet<NativeFlag> = HashSet::new();
-        for (offset, instr) in program {
-            if offset < entry {
-                continue;
-            }
-            match instr {
-                IRInst::SetFlagsFrom(flags, _) => {
-                    live_flags.extend(flags.iter().cloned());
-                }
-                IRInst::ClearFlags(flags) => {
-                    flags.iter().for_each(|x| _ = live_flags.remove(x));
-                }
-                IRInst::If(expr, _) => {
-                    analyze_expression(expr, &live_flags, &mut external_flags);
-                }
-                _ => {}
-            }
-        }
-        Partition {
-            entry_point: *entry,
-            external_flags,
-        }
-    }
-
-    for p in partition_entries {
-        partitions.push(analyze_partition(&p, &irt0program));
-    }
-
-    for p in partitions {
-        assert!(p.external_flags.is_empty());
-    }
+    let irt1program = irt1::lift(&irt0program);
+    println!("{irt1program:#?}");
 }

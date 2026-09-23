@@ -248,7 +248,7 @@ fn lift_jmp(x: Instruction) -> Vec<IRInst> {
                 IRExpr::BinOp {
                     kind: IRBinOpKind::Eq,
                     lhs: Box::new(IRExpr::Flag(NativeFlag::Zero)),
-                    rhs: Box::new(IRExpr::CU8(0)),
+                    rhs: Box::new(IRExpr::CU8(1)),
                 },
                 Box::new(IRInst::Jmp(lift_op(x, 0))),
             )]
