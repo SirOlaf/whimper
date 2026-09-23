@@ -33,7 +33,6 @@ fn declarations(instr: &IRInst, types: &mut HashMap<VariableId, VariableType>) {
 fn width(ty: VariableType) -> Option<usize> {
     match ty {
         VariableType::Unknown(size) => size,
-        VariableType::Register(register) => Some(register.size()),
         VariableType::Bool => None,
     }
 }
@@ -127,8 +126,8 @@ fn safe(flow: &Flow, definitions: &[usize], target: VariableId, base: VariableId
 fn candidate(function: &SyntheticFunction, flow: &Flow) -> Option<(VariableId, IRExpr)> {
     let mut types = HashMap::new();
     for parameter in &function.parameters {
-        if let Parameter::Slot { variable, register } = parameter {
-            types.insert(*variable, VariableType::Register(*register));
+        if let Parameter::Slot { variable, size } = parameter {
+            types.insert(*variable, VariableType::Unknown(Some(*size)));
         }
     }
     for (_, instr) in &function.body {
@@ -139,7 +138,7 @@ fn candidate(function: &SyntheticFunction, flow: &Flow) -> Option<(VariableId, I
         .iter()
         .filter_map(|parameter| match parameter {
             Parameter::Slot { variable, .. } => Some(*variable),
-            Parameter::Native { .. } => None,
+            Parameter::Argument { .. } => None,
         })
         .collect();
     let mut writes = HashMap::new();

@@ -127,7 +127,6 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
             let ty = match ty {
                 VariableType::Unknown(Some(size)) => format!("Unknown<{size}>"),
                 VariableType::Unknown(None) => "Unknown".to_string(),
-                VariableType::Register(register) => format!("Register<{register:?}>"),
                 VariableType::Bool => "Bool".to_string(),
             };
             writeln!(output, "{padding}let {}: {ty};", variable_name(*variable)).unwrap();
@@ -272,11 +271,11 @@ pub fn render(program: &Program) -> String {
             .parameters
             .iter()
             .map(|parameter| match parameter {
-                Parameter::Native { ordinal, register } => {
-                    format!("arg{ordinal}: Register<{register:?}>")
+                Parameter::Argument { ordinal, size } => {
+                    format!("arg{ordinal}: Unknown<{size}>")
                 }
-                Parameter::Slot { variable, register } => {
-                    format!("{}: Register<{register:?}>", variable_name(*variable))
+                Parameter::Slot { variable, size } => {
+                    format!("{}: Unknown<{size}>", variable_name(*variable))
                 }
             })
             .collect::<Vec<_>>()

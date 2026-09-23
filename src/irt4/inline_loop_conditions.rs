@@ -386,7 +386,7 @@ fn inline_function(function: &mut SyntheticFunction) {
             .iter()
             .filter_map(|parameter| match parameter {
                 Parameter::Slot { variable, .. } => Some(*variable),
-                Parameter::Native { .. } => None,
+                Parameter::Argument { .. } => None,
             })
             .collect();
         let Some(variable) = inline_offset_body(&mut function.body, &usage, &parameters) else {

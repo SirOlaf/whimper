@@ -29,13 +29,13 @@ fn loop_id(id: t3::LoopId) -> LoopId {
 
 fn parameter(parameter: &t3::Parameter) -> Parameter {
     match parameter {
-        t3::Parameter::Native { ordinal, register } => Parameter::Native {
+        t3::Parameter::Native { ordinal, register } => Parameter::Argument {
             ordinal: *ordinal,
-            register: *register,
+            size: register.size(),
         },
         t3::Parameter::Slot { variable, register } => Parameter::Slot {
             variable: variable_id(*variable),
-            register: *register,
+            size: register.size(),
         },
     }
 }
@@ -43,7 +43,7 @@ fn parameter(parameter: &t3::Parameter) -> Parameter {
 fn variable_type(ty: t3::VariableType) -> VariableType {
     match ty {
         t3::VariableType::Unknown(size) => VariableType::Unknown(size),
-        t3::VariableType::Register(register) => VariableType::Register(register),
+        t3::VariableType::Register(register) => VariableType::Unknown(Some(register.size())),
         t3::VariableType::Bool => VariableType::Bool,
     }
 }

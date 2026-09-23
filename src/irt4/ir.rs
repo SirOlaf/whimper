@@ -1,5 +1,3 @@
-use iced_x86::Register;
-
 #[derive(Debug, Clone)]
 pub struct Program {
     pub entry: Option<SyntheticFunctionId>,
@@ -16,15 +14,10 @@ pub struct SyntheticFunction {
 
 #[derive(Debug, Clone)]
 pub enum Parameter {
-    /// An incoming machine register at the true entry point. The register
-    /// alias carries the width, and its full register identifies the family.
-    Native { ordinal: usize, register: Register },
-    /// An incoming register value passed by a synthetic predecessor. The
-    /// register alias carries the width, and its full register identifies the family.
-    Slot {
-        variable: VariableId,
-        register: Register,
-    },
+    /// An incoming value supplied by the caller of the entry function.
+    Argument { ordinal: usize, size: usize },
+    /// An incoming value passed by a synthetic predecessor.
+    Slot { variable: VariableId, size: usize },
 }
 
 /// The identity of a synthetic function.
@@ -48,9 +41,8 @@ pub struct LoopId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VariableType {
+    /// A value with an optional known width in bytes.
     Unknown(Option<usize>),
-    /// A slot associated with this exact machine register.
-    Register(Register),
     Bool,
 }
 
