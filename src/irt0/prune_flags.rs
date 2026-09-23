@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 
-use crate::irt0::{
-    ir::{self, IRExpr, IRInst, NativeFlag},
-};
+use crate::irt0::ir::{self, IRExpr, IRInst, NativeFlag};
 
 type SourceIdx = usize;
 
@@ -111,10 +109,7 @@ pub fn tr(program: ir::Program) -> ir::Program {
             FlagIR::WriteFlag { flag, source_idx } => {
                 if !dirty_flags.contains(&flag) {
                     dirty_flags.insert(flag.clone());
-                    rev_code.push(FlagIR::WriteFlag {
-                        flag,
-                        source_idx,
-                    });
+                    rev_code.push(FlagIR::WriteFlag { flag, source_idx });
                 }
             }
             FlagIR::Boundary => {

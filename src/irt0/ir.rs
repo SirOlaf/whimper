@@ -27,6 +27,7 @@ pub enum IRBinOpKind {
     Shl,
 
     And,
+    Or,
 
     Eq,
 }
@@ -200,7 +201,7 @@ fn lift_cond(x: Instruction) -> Vec<IRInst> {
                 Code::Test_rm32_r32 => {
                     let and_expr = IRExpr::BinOp {
                         kind: IRBinOpKind::And,
-                        lhs: Box::new(lift_op(x, 1)),
+                        lhs: Box::new(lift_op(x, 0)),
                         rhs: Box::new(lift_op(x, 1)),
                     };
                     res.extend(vec![IRInst::SetFlagsFrom(
@@ -273,6 +274,16 @@ fn lift_jmp(x: Instruction) -> Vec<IRInst> {
                 Box::new(IRInst::Jmp(lift_op(x, 0))),
             )]
         }
+        Code::Jbe_rel8_64 => {
+            vec![IRInst::If(
+                IRExpr::BinOp {
+                    kind: IRBinOpKind::Or,
+                    lhs: Box::new(IRExpr::Flag(NativeFlag::Carry)),
+                    rhs: Box::new(IRExpr::Flag(NativeFlag::Zero)),
+                },
+                Box::new(IRInst::Jmp(lift_op(x, 0))),
+            )]
+        }
         _ => panic!("{:?}", x),
     }
 }
@@ -334,7 +345,9 @@ pub fn lift_to_irt0(code: &[u8], base_offset: usize) -> Program {
             Mnemonic::Add => Some(lift_add(instruction)),
             Mnemonic::Sub => Some(lift_sub(instruction)),
             Mnemonic::Test | Mnemonic::Cmp => Some(lift_cond(instruction)),
-            Mnemonic::Je | Mnemonic::Jb | Mnemonic::Jae => Some(lift_jmp(instruction)),
+            Mnemonic::Je | Mnemonic::Jb | Mnemonic::Jae | Mnemonic::Jbe => {
+                Some(lift_jmp(instruction))
+            }
             Mnemonic::Shl => Some(lift_shl(instruction)),
             Mnemonic::Ret => Some(lift_ret(instruction)),
             Mnemonic::Nop => None,

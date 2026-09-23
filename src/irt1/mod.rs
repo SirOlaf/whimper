@@ -1,4 +1,5 @@
 pub mod ir;
+pub mod prune_flags;
 
 use std::collections::{HashMap, HashSet};
 
@@ -8,7 +9,10 @@ use crate::irt0::ir::{
     IRBinOpKind, IRExpr, IRInst as IRT0Inst, NativeFlag, Program as IRT0Program,
 };
 
-use self::ir::{IRInst, Program, SyntheticFunction, SyntheticFunctionId};
+use self::ir::{
+    IRExpr as IRT1Expr, IRInst, Program, SyntheticFunction, SyntheticFunctionId, VariableId,
+    VariableType,
+};
 
 fn jump_target(expr: &IRExpr, offset: usize) -> Option<usize> {
     match expr {
@@ -112,7 +116,7 @@ impl SyntheticFunctionBuilder<'_> {
                     body.push((
                         offset,
                         IRInst::If {
-                            condition,
+                            condition: IRT1Expr::Native(condition),
                             then_branch: Box::new(then_branch),
                             else_branch: Box::new(else_branch),
                         },
@@ -133,52 +137,205 @@ impl SyntheticFunctionBuilder<'_> {
             index += 1;
         }
 
-        self.functions[reference.id].external_flags = external_flags(&body);
         self.functions[reference.id].body = body;
         reference
     }
 }
 
-fn read_flags(expr: &IRExpr, defined: &HashSet<NativeFlag>, external: &mut HashSet<NativeFlag>) {
+fn condition_flags(expr: &IRExpr, flags: &mut Vec<NativeFlag>) {
     match expr {
+        IRExpr::Flag(flag) if !flags.contains(flag) => flags.push(flag.clone()),
         IRExpr::BinOp { lhs, rhs, .. } => {
-            read_flags(lhs, defined, external);
-            read_flags(rhs, defined, external);
+            condition_flags(lhs, flags);
+            condition_flags(rhs, flags);
         }
-        IRExpr::Deref(inner) => read_flags(inner, defined, external),
-        IRExpr::Flag(flag) if !defined.contains(flag) => {
-            external.insert(flag.clone());
-        }
+        IRExpr::Deref(inner) => condition_flags(inner, flags),
         _ => {}
     }
 }
 
-fn external_flags(body: &[(usize, IRInst)]) -> HashSet<NativeFlag> {
-    let mut defined = HashSet::new();
-    let mut external = HashSet::new();
-    for (_, instr) in body {
-        match instr {
-            IRInst::Linear(IRT0Inst::SetFlagsFrom(flags, expr)) => {
-                read_flags(expr, &defined, &mut external);
-                defined.extend(flags.iter().cloned());
+fn flag_test(flag: &NativeFlag, expected: u8, slots: &HashMap<NativeFlag, VariableId>) -> IRT1Expr {
+    let slot = IRT1Expr::Variable(slots[flag]);
+    match expected {
+        1 => slot,
+        0 => IRT1Expr::Not(Box::new(slot)),
+        _ => panic!("a flag can only be compared with 0 or 1"),
+    }
+}
+
+fn lift_condition(expr: IRExpr, slots: &HashMap<NativeFlag, VariableId>) -> IRT1Expr {
+    match expr {
+        IRExpr::Flag(flag) => IRT1Expr::Variable(slots[&flag]),
+        IRExpr::BinOp {
+            kind: IRBinOpKind::Eq,
+            lhs,
+            rhs,
+        } => match (*lhs, *rhs) {
+            (IRExpr::Flag(flag), IRExpr::CU8(value)) | (IRExpr::CU8(value), IRExpr::Flag(flag)) => {
+                flag_test(&flag, value, slots)
             }
-            IRInst::Linear(IRT0Inst::ClearFlags(flags)) => {
-                defined.extend(flags.iter().cloned());
-            }
-            IRInst::Linear(IRT0Inst::Asgn { dest, src }) => {
-                read_flags(dest, &defined, &mut external);
-                read_flags(src, &defined, &mut external);
-            }
-            IRInst::Linear(IRT0Inst::Ret(Some(expr)))
-            | IRInst::If {
-                condition: expr, ..
-            } => {
-                read_flags(expr, &defined, &mut external);
-            }
-            _ => {}
+            (lhs, rhs) => IRT1Expr::Eq(
+                Box::new(lift_condition(lhs, slots)),
+                Box::new(lift_condition(rhs, slots)),
+            ),
+        },
+        IRExpr::BinOp {
+            kind: IRBinOpKind::Or,
+            lhs,
+            rhs,
+        } => IRT1Expr::Or(
+            Box::new(lift_condition(*lhs, slots)),
+            Box::new(lift_condition(*rhs, slots)),
+        ),
+        expr => {
+            let mut flags = Vec::new();
+            condition_flags(&expr, &mut flags);
+            assert!(flags.is_empty(), "unsupported flag condition: {expr:?}");
+            IRT1Expr::Native(expr)
         }
     }
-    external
+}
+
+fn flag_value(flag: &NativeFlag, expr: &IRExpr) -> IRT1Expr {
+    match (flag, expr) {
+        (NativeFlag::Zero, _) => IRT1Expr::Eq(
+            Box::new(IRT1Expr::Native(expr.clone())),
+            Box::new(IRT1Expr::Native(IRExpr::CU8(0))),
+        ),
+        (
+            NativeFlag::Carry,
+            IRExpr::BinOp {
+                kind: IRBinOpKind::Sub,
+                lhs,
+                rhs,
+            },
+        ) => IRT1Expr::UnsignedLt(
+            Box::new(IRT1Expr::Native((**lhs).clone())),
+            Box::new(IRT1Expr::Native((**rhs).clone())),
+        ),
+        (
+            NativeFlag::Carry,
+            IRExpr::BinOp {
+                kind: IRBinOpKind::Add,
+                lhs,
+                ..
+            },
+        ) => IRT1Expr::UnsignedLt(
+            Box::new(IRT1Expr::Native(expr.clone())),
+            Box::new(IRT1Expr::Native((**lhs).clone())),
+        ),
+        _ => unimplemented!("cannot express {flag:?} from {expr:?} as a boolean expression"),
+    }
+}
+
+fn lift_conditions(
+    function: SyntheticFunctionId,
+    body: Vec<(usize, IRInst)>,
+) -> Vec<(usize, IRInst)> {
+    let mut flags = Vec::new();
+    for (_, instr) in &body {
+        if let IRInst::If {
+            condition: IRT1Expr::Native(condition),
+            ..
+        } = instr
+        {
+            condition_flags(condition, &mut flags);
+        }
+    }
+    if flags.is_empty() {
+        return body;
+    }
+
+    let mut slots = HashMap::new();
+    let mut writes: HashMap<usize, Vec<(NativeFlag, VariableId)>> = HashMap::new();
+    for flag in flags {
+        // The branch is terminal, so the last write in this body is its source.
+        let Some(index) = body.iter().rposition(|(_, instr)| match instr {
+            IRInst::Linear(IRT0Inst::SetFlagsFrom(written, _))
+            | IRInst::Linear(IRT0Inst::ClearFlags(written)) => written.contains(&flag),
+            _ => false,
+        }) else {
+            unimplemented!(
+                "synthetic function {} reads {flag:?} from another function; parameters are needed",
+                function.id
+            );
+        };
+        let variable = VariableId {
+            owner: function,
+            id: slots.len(),
+        };
+        slots.insert(flag.clone(), variable);
+        writes.entry(index).or_default().push((flag, variable));
+    }
+
+    let entry_offset = body[0].0;
+    let mut lifted = Vec::new();
+    let mut variables: Vec<_> = slots.values().copied().collect();
+    variables.sort_by_key(|variable| variable.id);
+    for variable in variables {
+        lifted.push((
+            entry_offset,
+            IRInst::DeclareVariable {
+                variable,
+                ty: VariableType::Bool,
+            },
+        ));
+    }
+
+    for (index, (offset, instr)) in body.into_iter().enumerate() {
+        match instr {
+            IRInst::Linear(IRT0Inst::SetFlagsFrom(written, expr)) => {
+                if let Some(assignments) = writes.get(&index) {
+                    for (flag, variable) in assignments {
+                        lifted.push((
+                            offset,
+                            IRInst::AssignVariable {
+                                variable: *variable,
+                                value: flag_value(flag, &expr),
+                            },
+                        ));
+                    }
+                }
+                lifted.push((
+                    offset,
+                    IRInst::Linear(IRT0Inst::SetFlagsFrom(written, expr)),
+                ));
+            }
+            IRInst::Linear(IRT0Inst::ClearFlags(written)) => {
+                if let Some(assignments) = writes.get(&index) {
+                    for (_, variable) in assignments {
+                        lifted.push((
+                            offset,
+                            IRInst::AssignVariable {
+                                variable: *variable,
+                                value: IRT1Expr::Bool(false),
+                            },
+                        ));
+                    }
+                }
+                lifted.push((offset, IRInst::Linear(IRT0Inst::ClearFlags(written))));
+            }
+            IRInst::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let IRT1Expr::Native(condition) = condition else {
+                    unreachable!("conditions have not been lifted yet")
+                };
+                lifted.push((
+                    offset,
+                    IRInst::If {
+                        condition: lift_condition(condition, &slots),
+                        then_branch,
+                        else_branch,
+                    },
+                ));
+            }
+            instr => lifted.push((offset, instr)),
+        }
+    }
+    lifted
 }
 
 pub fn lift(source: &IRT0Program) -> Program {
@@ -211,8 +368,12 @@ pub fn lift(source: &IRT0Program) -> Program {
     }
 
     let entry = builder.function(0);
-    Program {
+    for (id, function) in builder.functions.iter_mut().enumerate() {
+        let body = std::mem::take(&mut function.body);
+        function.body = lift_conditions(SyntheticFunctionId { id }, body);
+    }
+    prune_flags::tr(Program {
         entry: Some(entry),
         functions: builder.functions,
-    }
+    })
 }
