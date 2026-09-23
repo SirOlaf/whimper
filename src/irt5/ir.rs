@@ -65,7 +65,9 @@ pub enum IRBinOpKind {
     And,
     Or,
     Eq,
+    Ne,
     UnsignedLt,
+    UnsignedGe,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

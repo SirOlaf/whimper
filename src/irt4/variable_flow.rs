@@ -80,7 +80,9 @@ fn offset(expr: &IRExpr) -> Option<Offset> {
             | IRBinOpKind::And
             | IRBinOpKind::Or
             | IRBinOpKind::Eq
-            | IRBinOpKind::UnsignedLt => None,
+            | IRBinOpKind::Ne
+            | IRBinOpKind::UnsignedLt
+            | IRBinOpKind::UnsignedGe => None,
         },
         _ => None,
     }

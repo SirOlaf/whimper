@@ -123,8 +123,8 @@ fn type_name(ty: VariableType) -> String {
     }
 }
 
-// Higher numbers bind more tightly. The levels follow TypeScript operators
-// used below, so an expression keeps its IR grouping when printed.
+// Higher numbers bind more tightly. Unsigned comparisons use the relational
+// level, so an expression keeps its IR grouping when printed.
 fn precedence(expr: &IRExpr) -> u8 {
     match expr {
         IRExpr::BinOp {
@@ -136,20 +136,20 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 2,
         IRExpr::BinOp {
-            kind: IRBinOpKind::Eq,
+            kind: IRBinOpKind::Eq | IRBinOpKind::Ne,
             ..
         } => 3,
         IRExpr::BinOp {
-            kind: IRBinOpKind::Shl,
+            kind: IRBinOpKind::UnsignedLt | IRBinOpKind::UnsignedGe,
             ..
         } => 4,
         IRExpr::BinOp {
-            kind: IRBinOpKind::UnsignedLt,
+            kind: IRBinOpKind::Shl,
             ..
-        } => 7,
-        IRExpr::BinOp { .. } => 5,
-        IRExpr::Not(..) | IRExpr::Deref(..) | IRExpr::MemoryAddress { .. } => 6,
-        _ => 7,
+        } => 5,
+        IRExpr::BinOp { .. } => 6,
+        IRExpr::Not(..) | IRExpr::Deref(..) | IRExpr::MemoryAddress { .. } => 7,
+        _ => 8,
     }
 }
 
@@ -165,26 +165,21 @@ fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> Stri
     let rendered = match expr {
         IRExpr::BinOp { kind, lhs, rhs } => {
             let operator = match kind {
-                IRBinOpKind::Add => Some("+"),
-                IRBinOpKind::Sub => Some("-"),
-                IRBinOpKind::Shl => Some("<<"),
-                IRBinOpKind::And => Some("&"),
-                IRBinOpKind::Or => Some("||"),
-                IRBinOpKind::Eq => Some("==="),
-                IRBinOpKind::UnsignedLt => None,
+                IRBinOpKind::Add => "+",
+                IRBinOpKind::Sub => "-",
+                IRBinOpKind::Shl => "<<",
+                IRBinOpKind::And => "&",
+                IRBinOpKind::Or => "||",
+                IRBinOpKind::Eq => "===",
+                IRBinOpKind::Ne => "!==",
+                IRBinOpKind::UnsignedLt => "u<",
+                IRBinOpKind::UnsignedGe => "u>=",
             };
-            match operator {
-                Some(operator) => format!(
-                    "{} {operator} {}",
-                    expression(lhs, own_precedence, types),
-                    expression(rhs, own_precedence + 1, types)
-                ),
-                None => format!(
-                    "unsignedLt({}, {})",
-                    expression(lhs, 0, types),
-                    expression(rhs, 0, types)
-                ),
-            }
+            format!(
+                "{} {operator} {}",
+                expression(lhs, own_precedence, types),
+                expression(rhs, own_precedence + 1, types)
+            )
         }
         IRExpr::Deref(address) => format!("*({})", expression(address, 0, types)),
         IRExpr::MemoryAddress { address, .. } => {

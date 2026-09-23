@@ -258,15 +258,15 @@ impl Analysis {
         match expr {
             IRExpr::BinOp { kind, lhs, rhs } => {
                 match kind {
-                    IRBinOpKind::Shl | IRBinOpKind::UnsignedLt => {
-                        let unsigned = *kind == IRBinOpKind::UnsignedLt;
+                    IRBinOpKind::Shl | IRBinOpKind::UnsignedLt | IRBinOpKind::UnsignedGe => {
+                        let unsigned = *kind != IRBinOpKind::Shl;
                         for operand in [lhs.as_ref(), rhs.as_ref()] {
                             if let Some(slot) = direct_slot(operand, owner) {
                                 self.integer(slot, unsigned);
                             }
                         }
                     }
-                    IRBinOpKind::Eq => {
+                    IRBinOpKind::Eq | IRBinOpKind::Ne => {
                         for (operand, literal) in [(lhs.as_ref(), rhs.as_ref()), (rhs, lhs)] {
                             if let (Some(slot), Some(size)) =
                                 (direct_slot(operand, owner), literal_size(literal))

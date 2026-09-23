@@ -1,4 +1,4 @@
-//! Remove binary operations that leave an expression unchanged.
+//! Simplify binary operations and direct negations.
 
 use super::ir::{IRBinOpKind, IRExpr, IRInst, LoopCondition, Program};
 
@@ -54,11 +54,34 @@ fn simplify_expression(expr: &mut IRExpr) {
             simplify_expression(original);
             simplify_expression(value);
         }
+        IRExpr::Not(inner) => {
+            simplify_expression(inner);
+            match inner.as_mut() {
+                IRExpr::BinOp { kind, .. } => {
+                    let opposite = match kind {
+                        IRBinOpKind::Eq => Some(IRBinOpKind::Ne),
+                        IRBinOpKind::Ne => Some(IRBinOpKind::Eq),
+                        IRBinOpKind::UnsignedLt => Some(IRBinOpKind::UnsignedGe),
+                        IRBinOpKind::UnsignedGe => Some(IRBinOpKind::UnsignedLt),
+                        _ => None,
+                    };
+                    if let Some(opposite) = opposite {
+                        *kind = opposite;
+                        let IRExpr::Not(inner) = std::mem::replace(expr, IRExpr::Bool(false))
+                        else {
+                            unreachable!();
+                        };
+                        *expr = *inner;
+                    }
+                }
+                IRExpr::Bool(value) => *expr = IRExpr::Bool(!*value),
+                _ => {}
+            }
+        }
         IRExpr::Deref(inner)
         | IRExpr::CastUnknownPtr { address: inner, .. }
         | IRExpr::ExtractBytes { value: inner, .. }
-        | IRExpr::ZeroExtend { value: inner, .. }
-        | IRExpr::Not(inner) => simplify_expression(inner),
+        | IRExpr::ZeroExtend { value: inner, .. } => simplify_expression(inner),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)
         | IRExpr::CU32(_)
