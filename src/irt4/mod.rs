@@ -1,4 +1,5 @@
 mod eliminate_aliases;
+mod inline_loop_conditions;
 pub mod ir;
 pub mod render;
 mod variable_flow;
@@ -385,5 +386,6 @@ pub fn lift(source: &t3::Program) -> Program {
             .collect(),
     };
     eliminate_aliases::run(&mut program);
+    inline_loop_conditions::run(&mut program);
     program
 }

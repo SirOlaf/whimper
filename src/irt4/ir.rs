@@ -54,7 +54,7 @@ pub enum VariableType {
     Bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IRBinOpKind {
     Add,
     Sub,
@@ -62,7 +62,7 @@ pub enum IRBinOpKind {
     And,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IRExpr {
     BinOp {
         kind: IRBinOpKind,
