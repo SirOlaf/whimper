@@ -25,6 +25,57 @@ pub struct LoopAnalysis {
     pub subtraction: Option<SubtractionLoop>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CompoundAssignment {
+    pub dest: IRExpr,
+    pub kind: IRBinOpKind,
+    pub value: IRExpr,
+}
+
+/// Recognize `a = a op b`, including the variable-specific assignment form.
+/// Only commutative, eagerly evaluated operations may match `a = b op a`.
+pub fn compound_assignment(instr: &IRInst) -> Option<CompoundAssignment> {
+    let (dest, source) = match instr {
+        IRInst::Assign { dest, src }
+            if matches!(dest, IRExpr::Variable(_))
+                || matches!(dest, IRExpr::Deref(address) if repeatable(address)) =>
+        {
+            (dest.clone(), src)
+        }
+        IRInst::AssignVariable { variable, value } => (IRExpr::Variable(*variable), value),
+        _ => return None,
+    };
+    let IRExpr::BinOp { kind, lhs, rhs } = source else {
+        return None;
+    };
+    if !matches!(
+        kind,
+        IRBinOpKind::Add
+            | IRBinOpKind::Sub
+            | IRBinOpKind::UnsignedMod
+            | IRBinOpKind::Shl
+            | IRBinOpKind::And
+            | IRBinOpKind::Or
+    ) {
+        return None;
+    }
+    let value = if dest == **lhs {
+        rhs.as_ref().clone()
+    } else if matches!(dest, IRExpr::Variable(_))
+        && matches!(kind, IRBinOpKind::Add | IRBinOpKind::And)
+        && dest == **rhs
+    {
+        lhs.as_ref().clone()
+    } else {
+        return None;
+    };
+    Some(CompoundAssignment {
+        dest,
+        kind: kind.clone(),
+        value,
+    })
+}
+
 pub(super) fn assignment(instr: &IRInst) -> Option<(VariableId, &IRExpr)> {
     match instr {
         IRInst::AssignVariable { variable, value }

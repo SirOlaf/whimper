@@ -66,6 +66,23 @@ impl Effects {
                 self.expression(src);
                 self.writes.insert(*variable);
             }
+            IRInst::CompoundAssign {
+                dest: IRExpr::Variable(variable),
+                kind,
+                value,
+            } => {
+                self.reads.insert(*variable);
+                self.expression(value);
+                self.may_trap |= *kind == IRBinOpKind::UnsignedMod;
+                self.writes.insert(*variable);
+            }
+            IRInst::CompoundAssign { dest, kind, value } => {
+                self.expression(dest);
+                self.expression(value);
+                self.may_trap |= *kind == IRBinOpKind::UnsignedMod;
+                self.memory_write = true;
+                self.unknown_write |= !matches!(dest, IRExpr::Deref(_));
+            }
             IRInst::Assign { dest, src } => {
                 self.expression(dest);
                 self.expression(src);

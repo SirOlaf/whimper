@@ -190,6 +190,21 @@ fn precedence(expr: &IRExpr) -> u8 {
     }
 }
 
+fn binary_operator(kind: &IRBinOpKind) -> &'static str {
+    match kind {
+        IRBinOpKind::Add => "+",
+        IRBinOpKind::Sub => "-",
+        IRBinOpKind::UnsignedMod => "u%",
+        IRBinOpKind::Shl => "<<",
+        IRBinOpKind::And => "&",
+        IRBinOpKind::Or => "||",
+        IRBinOpKind::Eq => "===",
+        IRBinOpKind::Ne => "!==",
+        IRBinOpKind::UnsignedLt => "u<",
+        IRBinOpKind::UnsignedGe => "u>=",
+    }
+}
+
 fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> String {
     // MemoryAddress carries the access width; a pointer-typed address needs
     // no cast in the output.
@@ -201,18 +216,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> Stri
     let own_precedence = precedence(expr);
     let rendered = match expr {
         IRExpr::BinOp { kind, lhs, rhs } => {
-            let operator = match kind {
-                IRBinOpKind::Add => "+",
-                IRBinOpKind::Sub => "-",
-                IRBinOpKind::UnsignedMod => "u%",
-                IRBinOpKind::Shl => "<<",
-                IRBinOpKind::And => "&",
-                IRBinOpKind::Or => "||",
-                IRBinOpKind::Eq => "===",
-                IRBinOpKind::Ne => "!==",
-                IRBinOpKind::UnsignedLt => "u<",
-                IRBinOpKind::UnsignedGe => "u>=",
-            };
+            let operator = binary_operator(kind);
             format!(
                 "{} {operator} {}",
                 expression(lhs, own_precedence, types),
@@ -268,6 +272,16 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize, types: &Rende
                 "{padding}{} = {};",
                 expression(dest, 0, types),
                 expression(src, 0, types)
+            )
+            .unwrap();
+        }
+        IRInst::CompoundAssign { dest, kind, value } => {
+            writeln!(
+                output,
+                "{padding}{} {}= {};",
+                expression(dest, 0, types),
+                binary_operator(kind),
+                expression(value, 0, types)
             )
             .unwrap();
         }

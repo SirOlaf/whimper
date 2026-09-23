@@ -72,7 +72,7 @@ impl Facts {
 
 struct Rule {
     name: &'static str,
-    apply: fn(&mut IRInst, &Context, &Facts) -> Option<usize>,
+    apply: fn(&mut IRInst, usize, &Context, &Facts) -> Option<usize>,
 }
 
 const RULES: &[Rule] = &[
@@ -84,9 +84,33 @@ const RULES: &[Rule] = &[
         name: "repeated-subtraction-to-remainder",
         apply: recover_remainder,
     },
+    Rule {
+        name: "compound-assignment",
+        apply: recover_compound_assignment,
+    },
 ];
 
-fn rotate_guarded_loop(instr: &mut IRInst, context: &Context, _facts: &Facts) -> Option<usize> {
+fn recover_compound_assignment(
+    instr: &mut IRInst,
+    offset: usize,
+    _context: &Context,
+    _facts: &Facts,
+) -> Option<usize> {
+    let shape = shapes::compound_assignment(instr)?;
+    *instr = IRInst::CompoundAssign {
+        dest: shape.dest,
+        kind: shape.kind,
+        value: shape.value,
+    };
+    Some(offset)
+}
+
+fn rotate_guarded_loop(
+    instr: &mut IRInst,
+    _offset: usize,
+    context: &Context,
+    _facts: &Facts,
+) -> Option<usize> {
     let IRInst::If {
         condition,
         then_branch,
@@ -157,7 +181,12 @@ fn rotate_guarded_loop(instr: &mut IRInst, context: &Context, _facts: &Facts) ->
     branch(then_branch, &guard, context).or_else(|| branch(else_branch, &guard.negated(), context))
 }
 
-fn recover_remainder(instr: &mut IRInst, context: &Context, facts: &Facts) -> Option<usize> {
+fn recover_remainder(
+    instr: &mut IRInst,
+    _offset: usize,
+    context: &Context,
+    facts: &Facts,
+) -> Option<usize> {
     let analysis = shapes::analyze(instr, context)?;
     let shape = analysis.subtraction?;
     if !shape.blockers.is_empty() || facts.is_zero(&shape.stride) == Some(true) {
@@ -225,7 +254,7 @@ fn rewrite(
         }
         let mut changed = false;
         for rule in RULES {
-            if let Some(offset) = (rule.apply)(instr, context, facts) {
+            if let Some(offset) = (rule.apply)(instr, offset, context, facts) {
                 report.rewrites.push(Rewrite {
                     offset,
                     rule: rule.name,

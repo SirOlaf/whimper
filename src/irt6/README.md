@@ -64,6 +64,11 @@ no other effects. The replacement is `x = x u% s`. Unsigned modulo is a binary
 operator whose width comes from its operands and whose divisor must be nonzero.
 It renders with multiplicative precedence.
 
+The compound-assignment rule recognizes `a = a op b` for assignable binary
+operators and renders the replacement as `a op= b`. It also recognizes
+`a = b + a` and `a = b & a` for variable destinations. Memory destinations
+match only the left operand and require a repeatable address expression.
+
 Branch facts prove zero or nonzero strides. Writes invalidate dependent facts;
 only invariant facts enter loop bodies. When the stride is unknown, the rule
 generates a nonzero guard with the original loop on the zero path. This preserves

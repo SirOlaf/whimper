@@ -184,6 +184,12 @@ pub enum IRInst {
         dest: IRExpr,
         src: IRExpr,
     },
+    /// Update a variable or memory location using its current value.
+    CompoundAssign {
+        dest: IRExpr,
+        kind: IRBinOpKind,
+        value: IRExpr,
+    },
     Return(Option<IRExpr>),
 
     DeclareVariable {
