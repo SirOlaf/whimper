@@ -188,7 +188,7 @@ fn rewrite_instruction(
                 rewrite_expression(argument, aliases, native_states);
             }
         }
-        IRInst::Return(None) | IRInst::Continue | IRInst::End => {}
+        IRInst::Return(None) | IRInst::Break | IRInst::Continue | IRInst::End => {}
     }
 }
 
@@ -273,6 +273,60 @@ fn rewrite_self_calls(
     }
 }
 
+fn exit_call_count(instr: &IRInst) -> usize {
+    match instr {
+        IRInst::CallSynthetic { .. } => 1,
+        IRInst::If {
+            then_branch,
+            else_branch,
+            ..
+        } => then_branch
+            .iter()
+            .chain(else_branch)
+            .map(exit_call_count)
+            .sum::<usize>()
+            .min(2),
+        // The input to this pass has no loops yet. Keep any future nested
+        // loop transfers local instead of hoisting them past this loop.
+        IRInst::Loop { .. } => 0,
+        _ => 0,
+    }
+}
+
+fn replace_exit_call(instr: &mut IRInst) -> Option<IRInst> {
+    match instr {
+        IRInst::CallSynthetic { .. } => match std::mem::replace(instr, IRInst::Break) {
+            call @ IRInst::CallSynthetic { .. } => Some(call),
+            _ => unreachable!(),
+        },
+        IRInst::If {
+            then_branch,
+            else_branch,
+            ..
+        } => then_branch
+            .iter_mut()
+            .chain(else_branch)
+            .find_map(replace_exit_call),
+        IRInst::Loop { .. } => None,
+        _ => None,
+    }
+}
+
+fn hoist_single_exit_call(body: &mut [(usize, IRInst)]) -> Option<(usize, IRInst)> {
+    let count = body
+        .iter()
+        .map(|(_, instr)| exit_call_count(instr))
+        .sum::<usize>()
+        .min(2);
+    if count != 1 {
+        return None;
+    }
+
+    body.iter_mut().find_map(|(offset, instr)| {
+        replace_exit_call(instr).map(|call| (*offset, call))
+    })
+}
+
 fn max_variable_id(function: &SyntheticFunction) -> Option<usize> {
     fn include(maximum: &mut Option<usize>, id: usize) {
         *maximum = Some(match *maximum {
@@ -354,6 +408,7 @@ fn max_variable_id(function: &SyntheticFunction) -> Option<usize> {
             }
             IRInst::Return(None)
             | IRInst::DeclareVariable { .. }
+            | IRInst::Break
             | IRInst::Continue
             | IRInst::End => {}
         }
@@ -512,6 +567,7 @@ fn lower_function(function: &mut SyntheticFunction, function_id: SyntheticFuncti
         }
     }
 
+    let exit_call = hoist_single_exit_call(&mut loop_body);
     let mut body = declarations;
     for (variable, ordinal, _) in native_initial_values {
         body.push((
@@ -529,6 +585,9 @@ fn lower_function(function: &mut SyntheticFunction, function_id: SyntheticFuncti
             body: loop_body,
         },
     ));
+    if let Some(exit_call) = exit_call {
+        body.push(exit_call);
+    }
     function.body = body;
 }
 

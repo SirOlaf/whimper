@@ -100,7 +100,11 @@ fn instruction_accesses(instr: &IRInst, accesses: &mut Vec<Access>) {
                 expression_accesses(argument, accesses);
             }
         }
-        IRInst::Return(None) | IRInst::DeclareVariable { .. } | IRInst::Continue | IRInst::End => {}
+        IRInst::Return(None)
+        | IRInst::DeclareVariable { .. }
+        | IRInst::Break
+        | IRInst::Continue
+        | IRInst::End => {}
     }
 }
 
@@ -330,9 +334,11 @@ fn replace_instruction(instr: &mut IRInst, variable: VariableId, value: &IRExpr)
                 replace_expression(argument, variable, value) | found
             })
         }
-        IRInst::Return(None) | IRInst::DeclareVariable { .. } | IRInst::Continue | IRInst::End => {
-            false
-        }
+        IRInst::Return(None)
+        | IRInst::DeclareVariable { .. }
+        | IRInst::Break
+        | IRInst::Continue
+        | IRInst::End => false,
     }
 }
 

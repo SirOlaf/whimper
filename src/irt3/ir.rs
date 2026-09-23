@@ -130,12 +130,15 @@ pub enum IRInst {
         else_branch: Vec<IRInst>,
     },
 
-    /// Repeat the body until it transfers elsewhere or reaches Continue.
+    /// Repeat the body when it reaches Continue; Break resumes after the loop.
     /// Source offsets are retained for the top-level instructions in the loop.
     Loop {
         entry_offset: usize,
         body: Vec<(usize, IRInst)>,
     },
+
+    /// Exit the enclosing Loop.
+    Break,
 
     /// Continue at the beginning of the enclosing Loop.
     Continue,

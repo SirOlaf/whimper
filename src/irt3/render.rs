@@ -186,6 +186,9 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
         IRInst::Continue => {
             writeln!(output, "{padding}continue;").unwrap();
         }
+        IRInst::Break => {
+            writeln!(output, "{padding}break;").unwrap();
+        }
         IRInst::CallSynthetic {
             function,
             arguments,
