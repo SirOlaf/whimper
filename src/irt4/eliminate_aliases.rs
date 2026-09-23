@@ -73,9 +73,10 @@ fn reachable(
     seen
 }
 
-/// A read must follow the copy on every path. After that copy, no path may
-/// change the base before reading the target. Re-entering the copy resets it.
-fn safe(flow: &Flow, definitions: &[usize], target: VariableId, base: VariableId) -> bool {
+/// A read must follow the copy on every path. For a slot source, no path may
+/// change the base before reading the target. Arguments need no such check.
+/// Re-entering the copy resets the slot-source check.
+fn safe(flow: &Flow, definitions: &[usize], target: VariableId, base: Option<VariableId>) -> bool {
     let blocked: HashSet<_> = definitions.iter().copied().collect();
     let reachable_nodes = reachable(flow, [flow.entry], &HashSet::new());
     if !definitions
@@ -112,7 +113,7 @@ fn safe(flow: &Flow, definitions: &[usize], target: VariableId, base: VariableId
         if changed && op.reads(target) {
             return false;
         }
-        let changed = changed || op.write == Some(base);
+        let changed = changed || base.is_some_and(|base| op.write == Some(base));
         pending.extend(
             flow.nodes[node]
                 .successors
@@ -141,6 +142,14 @@ fn candidate(function: &SyntheticFunction, flow: &Flow) -> Option<(VariableId, I
             Parameter::Argument { .. } => None,
         })
         .collect();
+    let argument_sizes: HashMap<_, _> = function
+        .parameters
+        .iter()
+        .filter_map(|parameter| match parameter {
+            Parameter::Argument { ordinal, size } => Some((*ordinal, *size)),
+            Parameter::Slot { .. } => None,
+        })
+        .collect();
     let mut writes = HashMap::new();
     for (index, node) in flow.nodes.iter().enumerate() {
         if let Some(variable) = node.operation.write {
@@ -150,37 +159,50 @@ fn candidate(function: &SyntheticFunction, flow: &Flow) -> Option<(VariableId, I
     let mut ordered = writes.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|(_, definitions)| definitions[0]);
     for (&target, definitions) in ordered {
-        let Some(derived) = flow.nodes[definitions[0]].operation.offset else {
-            continue;
-        };
-        if target == derived.base
-            || parameters.contains(&target)
-            || definitions
-                .iter()
-                .any(|&index| flow.nodes[index].operation.offset != Some(derived))
-        {
+        if parameters.contains(&target) {
             continue;
         }
-        let (Some(target_width), Some(base_width)) = (
-            types.get(&target).copied().and_then(width),
-            types.get(&derived.base).copied().and_then(width),
-        ) else {
+        let Some(target_width) = types.get(&target).copied().and_then(width) else {
             continue;
         };
-        // An address offset is only substituted at pointer width. This also
-        // avoids changing the truncation point of a narrower assignment.
-        if target_width != base_width {
-            continue;
-        }
-        let value = function
+        let Some(value) = function
             .body
             .iter()
-            .find_map(|(_, instr)| assignment(instr, target))?
-            .clone();
-        if !matches!(value, IRExpr::Variable(_)) && target_width != 8 {
+            .find_map(|(_, instr)| assignment(instr, target))
+            .cloned()
+        else {
             continue;
-        }
-        if !safe(flow, definitions, target, derived.base) {
+        };
+        let base = match &value {
+            IRExpr::Argument(ordinal)
+                if argument_sizes.get(ordinal) == Some(&target_width)
+                    && definitions
+                        .iter()
+                        .all(|&index| flow.nodes[index].operation.argument == Some(*ordinal)) =>
+            {
+                None
+            }
+            _ => {
+                let Some(derived) = flow.nodes[definitions[0]].operation.offset else {
+                    continue;
+                };
+                if target == derived.base
+                    || definitions
+                        .iter()
+                        .any(|&index| flow.nodes[index].operation.offset != Some(derived))
+                    || types.get(&derived.base).copied().and_then(width) != Some(target_width)
+                {
+                    continue;
+                }
+                // Address offsets are only substituted at pointer width, so
+                // a narrower assignment keeps its truncation point.
+                if !matches!(value, IRExpr::Variable(_)) && target_width != 8 {
+                    continue;
+                }
+                Some(derived.base)
+            }
+        };
+        if !safe(flow, definitions, target, base) {
             continue;
         }
         return Some((target, value));
@@ -377,6 +399,193 @@ fn simplify_branch(body: &mut Vec<IRInst>) {
     body.retain(|instr| !empty_if(instr));
 }
 
+fn value_has_width(
+    value: &IRExpr,
+    ty: VariableType,
+    types: &HashMap<VariableId, VariableType>,
+    arguments: &HashMap<usize, usize>,
+) -> bool {
+    match (value, ty) {
+        (IRExpr::Variable(variable), _) => types.get(variable) == Some(&ty),
+        (IRExpr::Argument(ordinal), VariableType::Unknown(Some(size))) => {
+            arguments.get(ordinal) == Some(&size)
+        }
+        (IRExpr::Deref(address), VariableType::Unknown(Some(size))) => matches!(
+            &**address,
+            IRExpr::CastUnknownPtr { size: Some(read_size), .. } if *read_size == size
+        ),
+        (IRExpr::ExtractBytes { size: result, .. }, VariableType::Unknown(Some(size)))
+        | (IRExpr::ZeroExtend { size: result, .. }, VariableType::Unknown(Some(size))) => {
+            *result == size
+        }
+        (IRExpr::CU8(_), VariableType::Unknown(Some(1)))
+        | (IRExpr::CU32(_), VariableType::Unknown(Some(4)))
+        | (IRExpr::CU64(_), VariableType::Unknown(Some(8)))
+        | (IRExpr::Bool(_), VariableType::Bool)
+        | (IRExpr::Not(_), VariableType::Bool) => true,
+        _ => false,
+    }
+}
+
+fn return_value(
+    assignment: &IRInst,
+    returning: &IRInst,
+    reads: &HashMap<VariableId, usize>,
+    writes: &HashMap<VariableId, usize>,
+    types: &HashMap<VariableId, VariableType>,
+    arguments: &HashMap<usize, usize>,
+    parameters: &HashSet<VariableId>,
+) -> Option<(VariableId, IRExpr)> {
+    // Moving a load or expression across another instruction could change
+    // what it reads. Only an adjacent definition and return are considered.
+    let IRInst::Return(Some(IRExpr::Variable(target))) = returning else {
+        return None;
+    };
+    if parameters.contains(target)
+        || reads.get(target) != Some(&1)
+        || writes.get(target) != Some(&1)
+    {
+        return None;
+    }
+    let ty = *types.get(target)?;
+    let value = match assignment {
+        IRInst::AssignVariable { variable, value } if variable == target => value.clone(),
+        IRInst::Assign {
+            dest: IRExpr::Variable(variable),
+            src,
+        } if variable == target => src.clone(),
+        IRInst::LoadVariable { variable, address } if variable == target => {
+            IRExpr::Deref(Box::new(address.clone()))
+        }
+        _ => return None,
+    };
+    value_has_width(&value, ty, types, arguments).then_some((*target, value))
+}
+
+struct ReturnUsage {
+    reads: HashMap<VariableId, usize>,
+    writes: HashMap<VariableId, usize>,
+    types: HashMap<VariableId, VariableType>,
+    arguments: HashMap<usize, usize>,
+    parameters: HashSet<VariableId>,
+}
+
+impl ReturnUsage {
+    fn from_function(function: &SyntheticFunction, flow: &Flow) -> Self {
+        let mut usage = Self {
+            reads: HashMap::new(),
+            writes: HashMap::new(),
+            types: HashMap::new(),
+            arguments: HashMap::new(),
+            parameters: HashSet::new(),
+        };
+        for parameter in &function.parameters {
+            match parameter {
+                Parameter::Argument { ordinal, size } => {
+                    usage.arguments.insert(*ordinal, *size);
+                }
+                Parameter::Slot { variable, size } => {
+                    usage.parameters.insert(*variable);
+                    usage
+                        .types
+                        .insert(*variable, VariableType::Unknown(Some(*size)));
+                }
+            }
+        }
+        for (_, instr) in &function.body {
+            declarations(instr, &mut usage.types);
+        }
+        for node in &flow.nodes {
+            let variables: HashSet<_> = node
+                .operation
+                .dependencies
+                .iter()
+                .map(|dependency| dependency.base)
+                .collect();
+            for variable in variables {
+                *usage.reads.entry(variable).or_default() += 1;
+            }
+            if let Some(variable) = node.operation.write {
+                *usage.writes.entry(variable).or_default() += 1;
+            }
+        }
+        usage
+    }
+
+    fn value(&self, assignment: &IRInst, returning: &IRInst) -> Option<(VariableId, IRExpr)> {
+        return_value(
+            assignment,
+            returning,
+            &self.reads,
+            &self.writes,
+            &self.types,
+            &self.arguments,
+            &self.parameters,
+        )
+    }
+}
+
+fn inline_returns_in_branch(
+    body: &mut Vec<IRInst>,
+    usage: &ReturnUsage,
+    removed: &mut HashSet<VariableId>,
+) {
+    let mut index = 1;
+    while index < body.len() {
+        if let Some((variable, value)) = usage.value(&body[index - 1], &body[index]) {
+            body[index] = IRInst::Return(Some(value));
+            body.remove(index - 1);
+            removed.insert(variable);
+            index = index.saturating_sub(1).max(1);
+        } else {
+            index += 1;
+        }
+    }
+    for instr in body {
+        inline_returns_in_instruction(instr, usage, removed);
+    }
+}
+
+fn inline_returns_in_body(
+    body: &mut Vec<(usize, IRInst)>,
+    usage: &ReturnUsage,
+    removed: &mut HashSet<VariableId>,
+) {
+    let mut index = 1;
+    while index < body.len() {
+        if let Some((variable, value)) = usage.value(&body[index - 1].1, &body[index].1) {
+            body[index].1 = IRInst::Return(Some(value));
+            body.remove(index - 1);
+            removed.insert(variable);
+            index = index.saturating_sub(1).max(1);
+        } else {
+            index += 1;
+        }
+    }
+    for (_, instr) in body {
+        inline_returns_in_instruction(instr, usage, removed);
+    }
+}
+
+fn inline_returns_in_instruction(
+    instr: &mut IRInst,
+    usage: &ReturnUsage,
+    removed: &mut HashSet<VariableId>,
+) {
+    match instr {
+        IRInst::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            inline_returns_in_branch(then_branch, usage, removed);
+            inline_returns_in_branch(else_branch, usage, removed);
+        }
+        IRInst::While { body, .. } => inline_returns_in_body(body, usage, removed),
+        _ => {}
+    }
+}
+
 pub fn run(program: &mut Program) {
     for function in &mut program.functions {
         loop {
@@ -392,6 +601,18 @@ pub fn run(program: &mut Program) {
                 .retain(|(_, instr)| !is_removed(instr, target));
             for (_, instr) in &mut function.body {
                 remove(instr, target);
+            }
+        }
+        let flow = Flow::from_function(function);
+        let usage = ReturnUsage::from_function(function, &flow);
+        let mut removed = HashSet::new();
+        inline_returns_in_body(&mut function.body, &usage, &mut removed);
+        for variable in removed {
+            function
+                .body
+                .retain(|(_, instr)| !is_removed(instr, variable));
+            for (_, instr) in &mut function.body {
+                remove(instr, variable);
             }
         }
         for (_, instr) in &mut function.body {

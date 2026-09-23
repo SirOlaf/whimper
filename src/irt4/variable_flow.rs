@@ -21,6 +21,7 @@ pub(super) struct Operation {
     pub dependencies: HashSet<Offset>,
     pub write: Option<VariableId>,
     pub offset: Option<Offset>,
+    pub argument: Option<usize>,
 }
 
 impl Operation {
@@ -123,6 +124,9 @@ fn operation(instr: &IRInst) -> Operation {
             if let IRExpr::Variable(variable) = dest {
                 op.write = Some(*variable);
                 op.offset = offset(src);
+                if let IRExpr::Argument(ordinal) = src {
+                    op.argument = Some(*ordinal);
+                }
             } else {
                 reads(dest, &mut op.dependencies);
             }
@@ -131,6 +135,9 @@ fn operation(instr: &IRInst) -> Operation {
             reads(value, &mut op.dependencies);
             op.write = Some(*variable);
             op.offset = offset(value);
+            if let IRExpr::Argument(ordinal) = value {
+                op.argument = Some(*ordinal);
+            }
         }
         IRInst::LoadVariable { variable, address } => {
             reads(address, &mut op.dependencies);
