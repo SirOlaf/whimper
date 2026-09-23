@@ -3,6 +3,7 @@ mod irt1;
 mod irt2;
 mod irt3;
 mod irt4;
+mod irt5;
 
 fn main() {
     const CODE: &[u8] = &[
@@ -22,5 +23,6 @@ fn main() {
     let irt2program = irt2::lift(&irt1program);
     let irt3program = irt3::lift(&irt2program);
     let irt4program = irt4::lift(&irt3program);
-    print!("{}", irt4::render::render(&irt4program));
+    let irt5program = irt5::lift(&irt4program);
+    print!("{}", irt5::render::render(&irt5program));
 }
