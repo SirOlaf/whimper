@@ -1,5 +1,6 @@
 pub mod ir;
 pub mod prune_flags;
+pub mod register_parameters;
 pub mod render;
 
 use std::collections::{HashMap, HashSet};
@@ -98,6 +99,7 @@ impl SyntheticFunctionBuilder<'_> {
         match self.local_target(expr, offset) {
             Some(index) => IRInst::CallSynthetic {
                 function: self.function(index),
+                arguments: Vec::new(),
             },
             None => IRInst::Jump(lift_expr(expr.clone())),
         }
@@ -107,6 +109,7 @@ impl SyntheticFunctionBuilder<'_> {
         if index < self.source.len() {
             IRInst::CallSynthetic {
                 function: self.function(index),
+                arguments: Vec::new(),
             }
         } else {
             IRInst::End
@@ -126,6 +129,7 @@ impl SyntheticFunctionBuilder<'_> {
         self.by_start.insert(start, reference);
         self.functions.push(SyntheticFunction {
             entry_offset: self.source[start].0,
+            parameters: Vec::new(),
             external_flags: HashSet::new(),
             body: Vec::new(),
         });
@@ -406,8 +410,9 @@ pub fn lift(source: &IRT0Program) -> Program {
         let body = std::mem::take(&mut function.body);
         function.body = lift_conditions(SyntheticFunctionId { id }, body);
     }
-    prune_flags::tr(Program {
+    let program = prune_flags::tr(Program {
         entry: Some(entry),
         functions: builder.functions,
-    })
+    });
+    register_parameters::tr(program)
 }

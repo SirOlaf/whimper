@@ -92,7 +92,7 @@ fn prune_function(function: &mut SyntheticFunction) {
 
 fn check_calls(instr: &IRInst, functions: &[SyntheticFunction]) {
     match instr {
-        IRInst::CallSynthetic { function } => {
+        IRInst::CallSynthetic { function, .. } => {
             let callee = &functions[function.id];
             if !callee.external_flags.is_empty() {
                 unimplemented!(

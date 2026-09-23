@@ -148,8 +148,21 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
             instruction(output, else_branch, indent + 1);
             writeln!(output, "{padding}}}").unwrap();
         }
-        IRInst::CallSynthetic { function } => {
-            writeln!(output, "{padding}return {}();", function_name(*function)).unwrap();
+        IRInst::CallSynthetic {
+            function,
+            arguments,
+        } => {
+            let arguments = arguments
+                .iter()
+                .map(|argument| expression(argument, 0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(
+                output,
+                "{padding}return {}({arguments});",
+                function_name(*function)
+            )
+            .unwrap();
         }
         IRInst::Jump(target) => {
             writeln!(output, "{padding}jump({});", expression(target, 0)).unwrap();
@@ -170,9 +183,15 @@ pub fn render(program: &Program) -> String {
 
     for (index, function) in program.functions.iter().enumerate() {
         let id = SyntheticFunctionId { id: index };
+        let parameters = function
+            .parameters
+            .iter()
+            .map(|register| format!("{register:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         writeln!(
             output,
-            "\nfunction {}() {{ // 0x{:x}",
+            "\nfunction {}({parameters}) {{ // 0x{:x}",
             function_name(id),
             function.entry_offset
         )

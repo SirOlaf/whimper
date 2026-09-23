@@ -14,6 +14,8 @@ pub struct Program {
 #[derive(Debug, Clone)]
 pub struct SyntheticFunction {
     pub entry_offset: usize,
+    /// Register families whose incoming values are used by this function or a callee.
+    pub parameters: Vec<Register>,
     /// Flags read in this body before this body defines them.
     pub external_flags: HashSet<NativeFlag>,
     pub body: Vec<(usize, IRInst)>,
@@ -100,6 +102,7 @@ pub enum IRInst {
     /// Tail call into a shared synthetic function; the caller does not resume.
     CallSynthetic {
         function: SyntheticFunctionId,
+        arguments: Vec<IRExpr>,
     },
 
     /// A jump outside the locally lifted function.
