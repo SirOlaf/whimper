@@ -82,6 +82,14 @@ operators and renders the replacement as `a op= b`. It also recognizes
 `a = b + a` and `a = b & a` for variable destinations. Memory destinations
 match only the left operand and require a repeatable address expression.
 
+The vector-iteration rule recognizes a zero-terminated traversal of a typed
+vector. It removes a counter and repeated element load only when both locals
+are confined to the matched loop, the counter increments by one, and the
+body cannot change the vector or divert control flow. Tier 6 retains the
+counter width and the offsets of the implicit advance and load. The rendered
+`for v: T in vector[start..]` denotes iteration through successive elements
+until the first zero element, with the original counter wrap behavior.
+
 The boolean-return rule replaces an `if` whose two branches only return zero
 and one with a return of the condition's boolean value or its negation. The
 constants must have the same width. The condition is still evaluated once,

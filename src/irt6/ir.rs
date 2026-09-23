@@ -264,6 +264,23 @@ pub enum IRInst {
         body: Vec<(usize, IRInst)>,
     },
 
+    /// Iterate a vector suffix until a zero element is loaded. The index
+    /// advances with `index_bits`-wide wrapping arithmetic; each element is
+    /// loaded before the terminator check. This retains the behavior of a
+    /// counted native loop even though the counter is no longer exposed.
+    ForEach {
+        entry_offset: usize,
+        condition_offset: usize,
+        advance_offset: usize,
+        load_offset: usize,
+        variable: VariableId,
+        element_type: VariableType,
+        vector: IRExpr,
+        start: u64,
+        index_bits: usize,
+        body: Vec<(usize, IRInst)>,
+    },
+
     /// Exit the enclosing Loop.
     Break,
 

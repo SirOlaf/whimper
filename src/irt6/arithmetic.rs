@@ -70,6 +70,14 @@ fn access_bits(bytes: usize) -> Option<usize> {
 }
 
 impl Context {
+    pub fn direct_type(&self, expr: &IRExpr) -> Option<&VariableType> {
+        match expr {
+            IRExpr::Variable(variable) => self.variables.get(variable),
+            IRExpr::Argument(ordinal) => self.arguments.get(ordinal),
+            _ => None,
+        }
+    }
+
     pub fn from_function(function: &SyntheticFunction) -> Self {
         let mut context = Self::default();
         for parameter in &function.parameters {
@@ -98,6 +106,17 @@ impl Context {
                     }
                 }
                 IRInst::While { body, .. } => {
+                    for (_, instr) in body {
+                        collect(context, instr);
+                    }
+                }
+                IRInst::ForEach {
+                    variable,
+                    element_type,
+                    body,
+                    ..
+                } => {
+                    context.variables.insert(*variable, element_type.clone());
                     for (_, instr) in body {
                         collect(context, instr);
                     }

@@ -121,6 +121,20 @@ impl Effects {
                     self.instruction(instr);
                 }
             }
+            IRInst::ForEach {
+                variable,
+                vector,
+                body,
+                ..
+            } => {
+                self.control = true;
+                self.expression(vector);
+                self.memory_read = true;
+                self.writes.insert(*variable);
+                for (_, instr) in body {
+                    self.instruction(instr);
+                }
+            }
             IRInst::Return(value) => {
                 self.control = true;
                 if let Some(value) = value {

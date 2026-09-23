@@ -34,6 +34,17 @@ impl<'a> RenderTypes<'a> {
                     self.collect_instruction(instr);
                 }
             }
+            IRInst::ForEach {
+                variable,
+                element_type,
+                body,
+                ..
+            } => {
+                self.variables.insert(*variable, element_type.clone());
+                for (_, instr) in body {
+                    self.collect_instruction(instr);
+                }
+            }
             _ => {}
         }
     }
@@ -181,6 +192,20 @@ fn type_name(ty: VariableType, structs: &[StructDefinition]) -> String {
 
 fn dereference(address: &IRExpr, types: &RenderTypes) -> String {
     if let IRExpr::ElementAddress { base, index, .. } = address {
+        let index = match index.as_ref() {
+            IRExpr::Convert {
+                value,
+                source,
+                target,
+            } if !source.signed
+                && !target.signed
+                && target.size >= source.size
+                && types.integer_type(value) == Some(*source) =>
+            {
+                value.as_ref()
+            }
+            other => other,
+        };
         format!(
             "{}[{}]",
             expression(base, 10, types),
@@ -470,6 +495,44 @@ fn instruction(
                     .unwrap();
                 }
             }
+        }
+        IRInst::ForEach {
+            entry_offset,
+            condition_offset,
+            advance_offset,
+            load_offset,
+            variable,
+            element_type,
+            vector,
+            start,
+            index_bits,
+            body,
+        } => {
+            if address_comments {
+                writeln!(output, "{padding}// 0x{entry_offset:x}").unwrap();
+                writeln!(output, "{padding}// u{index_bits} index wraps; advance 0x{advance_offset:x}, load 0x{load_offset:x}").unwrap();
+            }
+            if address_comments && condition_offset != entry_offset {
+                writeln!(output, "{padding}// 0x{condition_offset:x}").unwrap();
+            }
+            writeln!(
+                output,
+                "{padding}for {}: {} in {}[{start}..] {{",
+                variable_name(*variable),
+                type_name(element_type.clone(), types.structs),
+                expression(vector, 10, types),
+            )
+            .unwrap();
+            let nested_padding = "    ".repeat(indent + 1);
+            let mut previous_offset = Some(*entry_offset);
+            for (offset, instr) in body {
+                if address_comments && previous_offset != Some(*offset) {
+                    writeln!(output, "{nested_padding}// 0x{offset:x}").unwrap();
+                    previous_offset = Some(*offset);
+                }
+                instruction(output, instr, indent + 1, types, address_comments);
+            }
+            writeln!(output, "{padding}}}").unwrap();
         }
         IRInst::Continue => {
             writeln!(output, "{padding}continue;").unwrap();

@@ -180,6 +180,20 @@ fn type_name(ty: VariableType, structs: &[StructDefinition]) -> String {
 
 fn dereference(address: &IRExpr, types: &RenderTypes) -> String {
     if let IRExpr::ElementAddress { base, index, .. } = address {
+        let index = match index.as_ref() {
+            IRExpr::Convert {
+                value,
+                source,
+                target,
+            } if !source.signed
+                && !target.signed
+                && target.size >= source.size
+                && types.integer_type(value) == Some(*source) =>
+            {
+                value.as_ref()
+            }
+            other => other,
+        };
         format!(
             "{}[{}]",
             expression(base, 8, types),

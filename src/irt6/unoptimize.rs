@@ -109,7 +109,7 @@ fn writes_disjoint(instr: &IRInst, address: &IRExpr) -> bool {
             .iter()
             .chain(else_branch)
             .all(|instr| writes_disjoint(instr, address)),
-        IRInst::While { body, .. } => body
+        IRInst::While { body, .. } | IRInst::ForEach { body, .. } => body
             .iter()
             .all(|(_, instr)| writes_disjoint(instr, address)),
         _ => {
@@ -298,6 +298,7 @@ fn simplify_boolean_chains(
             | LoopCondition::After { expression, .. }) = condition;
             simplify_boolean_expression(expression)
         }
+        IRInst::ForEach { vector, .. } => simplify_boolean_expression(vector),
         IRInst::CallSynthetic { arguments, .. } => {
             arguments.iter_mut().fold(false, |changed, argument| {
                 simplify_boolean_expression(argument) || changed
@@ -502,7 +503,7 @@ impl InstructionSlot for (usize, IRInst) {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 struct VariableUses {
     reads: usize,
     writes: usize,
@@ -539,6 +540,18 @@ fn collect_uses(instr: &IRInst, uses: &mut HashMap<VariableId, VariableUses>) {
                 collect_uses(instr, uses);
             }
         }
+        IRInst::ForEach {
+            variable,
+            vector,
+            body,
+            ..
+        } => {
+            add_uses(&Effects::of_expression(vector), uses);
+            uses.entry(*variable).or_default().writes += 1;
+            for (_, instr) in body {
+                collect_uses(instr, uses);
+            }
+        }
         _ => {
             let mut effects = Effects::default();
             effects.instruction(instr);
@@ -565,7 +578,7 @@ fn collapse_temporary_assignments<T: InstructionSlot>(
                 collapse_temporary_assignments(then_branch, offset, context, uses, report);
                 collapse_temporary_assignments(else_branch, offset, context, uses, report);
             }
-            IRInst::While { body, .. } => {
+            IRInst::While { body, .. } | IRInst::ForEach { body, .. } => {
                 collapse_temporary_assignments(body, offset, context, uses, report);
             }
             _ => {}
@@ -603,6 +616,87 @@ fn collapse_temporary_assignments<T: InstructionSlot>(
             index += 1;
         }
     }
+}
+
+fn recover_vector_iterations<T: InstructionSlot>(
+    instructions: &mut Vec<T>,
+    fallback_offset: usize,
+    context: &Context,
+    uses: &HashMap<VariableId, VariableUses>,
+    report: &mut Report,
+) -> bool {
+    for slot in instructions.iter_mut() {
+        let offset = slot.offset(fallback_offset);
+        match slot.instruction_mut() {
+            IRInst::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                if recover_vector_iterations(then_branch, offset, context, uses, report)
+                    || recover_vector_iterations(else_branch, offset, context, uses, report)
+                {
+                    return true;
+                }
+            }
+            IRInst::While { body, .. } | IRInst::ForEach { body, .. } => {
+                if recover_vector_iterations(body, offset, context, uses, report) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    if instructions.len() < 3 || report.rewrites.len() >= MAX_REWRITES {
+        return false;
+    }
+    for loop_index in 2..instructions.len() {
+        let element_index = loop_index - 1;
+        for counter_index in (0..element_index).rev() {
+            let Some(shape) = shapes::vector_iteration(
+                instructions[counter_index].instruction(),
+                instructions[element_index].instruction(),
+                instructions[loop_index].instruction(),
+                context,
+            ) else {
+                continue;
+            };
+            let mut local_uses = HashMap::new();
+            for index in [counter_index, element_index, loop_index] {
+                collect_uses(instructions[index].instruction(), &mut local_uses);
+            }
+            if [shape.counter, shape.element]
+                .iter()
+                .any(|variable| uses.get(variable) != local_uses.get(variable))
+            {
+                continue;
+            }
+            let mut intervening = Effects::default();
+            for slot in &instructions[counter_index + 1..element_index] {
+                intervening.instruction(slot.instruction());
+            }
+            if intervening.reads.contains(&shape.counter)
+                || intervening.writes.contains(&shape.counter)
+                || intervening.reads.contains(&shape.element)
+                || intervening.writes.contains(&shape.element)
+            {
+                continue;
+            }
+            let offset = match &shape.replacement {
+                IRInst::ForEach { entry_offset, .. } => *entry_offset,
+                _ => unreachable!(),
+            };
+            *instructions[loop_index].instruction_mut() = shape.replacement;
+            instructions.remove(element_index);
+            instructions.remove(counter_index);
+            report.rewrites.push(Rewrite {
+                offset,
+                rule: "zero-terminated-vector-iteration",
+            });
+            return true;
+        }
+    }
+    false
 }
 
 fn sequence<'a>(
@@ -689,7 +783,7 @@ fn rewrite(
                 report,
             );
         }
-        IRInst::While { body, .. } => {
+        IRInst::While { body, .. } | IRInst::ForEach { body, .. } => {
             let mut effects = Effects::default();
             for (_, instr) in body.iter() {
                 effects.instruction(instr);
@@ -730,7 +824,7 @@ fn collect(instr: &IRInst, context: &Context, output: &mut Vec<LoopAnalysis>) {
                 collect(instr, context, output);
             }
         }
-        IRInst::While { body, .. } => {
+        IRInst::While { body, .. } | IRInst::ForEach { body, .. } => {
             for (_, instr) in body {
                 collect(instr, context, output);
             }
@@ -783,6 +877,22 @@ pub fn run_with_options(program: &mut Program, options: Options) -> Report {
             &options,
             &mut report,
         );
+        loop {
+            let mut uses = HashMap::new();
+            for (_, instr) in &function.body {
+                collect_uses(instr, &mut uses);
+            }
+            if !recover_vector_iterations(
+                &mut function.body,
+                function.entry_offset,
+                &context,
+                &uses,
+                &mut report,
+            ) || report.rewrites.len() >= MAX_REWRITES
+            {
+                break;
+            }
+        }
         for (_, instr) in &function.body {
             collect(instr, &context, &mut report.remaining);
         }
