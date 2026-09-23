@@ -1,5 +1,6 @@
 mod irt0;
 mod irt1;
+mod irt2;
 
 fn main() {
     const CODE: &[u8] = &[
@@ -16,5 +17,6 @@ fn main() {
     let irt0program = irt0::lift(CODE, base_offset);
 
     let irt1program = irt1::lift(&irt0program);
-    print!("{}", irt1::render::render(&irt1program));
+    let irt2program = irt2::lift(&irt1program);
+    print!("{}", irt2::render::render(&irt2program));
 }

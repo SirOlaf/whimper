@@ -8,14 +8,28 @@ use std::collections::{HashMap, HashSet};
 use iced_x86::Register;
 
 use crate::irt0::ir::{
-    IRBinOpKind as IRT0BinOpKind, IRExpr as IRT0Expr, IRInst as IRT0Inst, NativeFlag,
+    IRBinOpKind as IRT0BinOpKind, IRExpr as IRT0Expr, IRInst as IRT0Inst, NativeFlag as IRT0Flag,
     Program as IRT0Program,
 };
 
 use self::ir::{
-    IRBinOpKind, IRExpr, IRInst, Program, SyntheticFunction, SyntheticFunctionId, VariableId,
-    VariableType,
+    IRBinOpKind, IRExpr, IRInst, NativeFlag, Program, SyntheticFunction, SyntheticFunctionId,
+    VariableId, VariableType,
 };
+
+fn lift_flag(flag: IRT0Flag) -> NativeFlag {
+    match flag {
+        IRT0Flag::Carry => NativeFlag::Carry,
+        IRT0Flag::Parity => NativeFlag::Parity,
+        IRT0Flag::AuxCarry => NativeFlag::AuxCarry,
+        IRT0Flag::Zero => NativeFlag::Zero,
+        IRT0Flag::Sign => NativeFlag::Sign,
+        IRT0Flag::Trap => NativeFlag::Trap,
+        IRT0Flag::InterruptEnable => NativeFlag::InterruptEnable,
+        IRT0Flag::Direction => NativeFlag::Direction,
+        IRT0Flag::Overflow => NativeFlag::Overflow,
+    }
+}
 
 fn lift_expr(expr: IRT0Expr) -> IRExpr {
     match expr {
@@ -49,7 +63,7 @@ fn lift_expr(expr: IRT0Expr) -> IRExpr {
         }
         IRT0Expr::Deref(inner) => IRExpr::Deref(Box::new(lift_expr(*inner))),
         IRT0Expr::Reg(reg) => IRExpr::Reg(reg),
-        IRT0Expr::Flag(flag) => IRExpr::Flag(flag),
+        IRT0Expr::Flag(flag) => IRExpr::Flag(lift_flag(flag)),
         IRT0Expr::CU8(value) => IRExpr::CU8(value),
         IRT0Expr::CU32(value) => IRExpr::CU32(value),
         IRT0Expr::CU64(value) => IRExpr::CU64(value),
@@ -187,12 +201,17 @@ impl SyntheticFunctionBuilder<'_> {
                 IRT0Inst::SetFlagsFrom(flags, expr) => body.push((
                     offset,
                     IRInst::SetFlagsFrom {
-                        flags,
+                        flags: flags.into_iter().map(lift_flag).collect(),
                         expr: lift_expr(expr),
                     },
                 )),
                 IRT0Inst::ClearFlags(flags) => {
-                    body.push((offset, IRInst::ClearFlags { flags }));
+                    body.push((
+                        offset,
+                        IRInst::ClearFlags {
+                            flags: flags.into_iter().map(lift_flag).collect(),
+                        },
+                    ));
                 }
             }
             index += 1;

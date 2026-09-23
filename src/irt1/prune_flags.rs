@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 
-use crate::irt0::ir::NativeFlag;
-
-use super::ir::{IRExpr, IRInst, Program, SyntheticFunction};
+use super::ir::{IRExpr, IRInst, NativeFlag, Program, SyntheticFunction};
 
 fn read_expr(expr: &IRExpr, live: &mut HashSet<NativeFlag>) {
     match expr {
@@ -114,13 +112,68 @@ fn check_calls(instr: &IRInst, functions: &[SyntheticFunction]) {
     }
 }
 
+fn require_lowered_expr(expr: &IRExpr, function: usize, offset: usize) {
+    match expr {
+        IRExpr::Flag(flag) => {
+            panic!("tier 1 left {flag:?} in fn_{function} at 0x{offset:x}; lower it before tier 2")
+        }
+        IRExpr::BinOp { lhs, rhs, .. }
+        | IRExpr::Eq(lhs, rhs)
+        | IRExpr::UnsignedLt(lhs, rhs)
+        | IRExpr::Or(lhs, rhs) => {
+            require_lowered_expr(lhs, function, offset);
+            require_lowered_expr(rhs, function, offset);
+        }
+        IRExpr::Deref(inner) | IRExpr::Not(inner) => require_lowered_expr(inner, function, offset),
+        _ => {}
+    }
+}
+
+fn require_lowered_inst(instr: &IRInst, function: usize, offset: usize) {
+    match instr {
+        IRInst::SetFlagsFrom { flags, .. } | IRInst::ClearFlags { flags } => panic!(
+            "tier 1 left native flag writes {flags:?} in fn_{function} at 0x{offset:x}; lower them before tier 2"
+        ),
+        IRInst::Assign { dest, src } => {
+            require_lowered_expr(dest, function, offset);
+            require_lowered_expr(src, function, offset);
+        }
+        IRInst::AssignVariable { value, .. }
+        | IRInst::Return(Some(value))
+        | IRInst::Jump(value) => require_lowered_expr(value, function, offset),
+        IRInst::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            require_lowered_expr(condition, function, offset);
+            require_lowered_inst(then_branch, function, offset);
+            require_lowered_inst(else_branch, function, offset);
+        }
+        IRInst::CallSynthetic { arguments, .. } => {
+            for argument in arguments {
+                require_lowered_expr(argument, function, offset);
+            }
+        }
+        IRInst::Return(None) | IRInst::DeclareVariable { .. } | IRInst::End => {}
+    }
+}
+
 pub fn tr(mut program: Program) -> Program {
     for function in &mut program.functions {
         prune_function(function);
     }
-    for function in &program.functions {
+    for (id, function) in program.functions.iter().enumerate() {
+        assert!(
+            function.external_flags.is_empty(),
+            "tier 1 left external flags {:?} in fn_{id}; lower them before tier 2",
+            function.external_flags
+        );
         for (_, instr) in &function.body {
             check_calls(instr, &program.functions);
+        }
+        for (offset, instr) in &function.body {
+            require_lowered_inst(instr, id, *offset);
         }
     }
     program

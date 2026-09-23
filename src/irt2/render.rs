@@ -1,9 +1,9 @@
-//! A readable, TypeScript-like view of tier 1 for manual debugging.
+//! A readable view of tier 2 for manual debugging.
 
 use std::fmt::Write;
 
 use super::ir::{
-    IRBinOpKind, IRExpr, IRInst, NativeFlag, Program, SyntheticFunctionId, VariableId, VariableType,
+    IRBinOpKind, IRExpr, IRInst, Parameter, Program, SyntheticFunctionId, VariableId, VariableType,
 };
 
 fn function_name(id: SyntheticFunctionId) -> String {
@@ -12,16 +12,6 @@ fn function_name(id: SyntheticFunctionId) -> String {
 
 fn variable_name(id: VariableId) -> String {
     format!("v{}", id.id)
-}
-
-fn flags(flags: &std::collections::HashSet<NativeFlag>) -> String {
-    let mut names: Vec<_> = flags.iter().map(|flag| format!("{flag:?}")).collect();
-    names.sort();
-    names
-        .into_iter()
-        .map(|name| format!("\"{name}\""))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 // Higher numbers bind more tightly. The levels follow TypeScript operators
@@ -39,7 +29,7 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 4,
         IRExpr::BinOp { .. } => 5,
-        IRExpr::Not(..) => 6,
+        IRExpr::Not(..) | IRExpr::Deref(..) | IRExpr::CastUnknownPtr { .. } => 6,
         _ => 7,
     }
 }
@@ -60,9 +50,30 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
                 expression(rhs, own_precedence + 1)
             )
         }
-        IRExpr::Deref(address) => format!("memory[{}]", expression(address, 0)),
-        IRExpr::Reg(reg) => format!("{reg:?}"),
-        IRExpr::Flag(flag) => format!("flags.{flag:?}"),
+        IRExpr::Deref(address) => format!("*({})", expression(address, 0)),
+        IRExpr::CastUnknownPtr { address, size } => match size {
+            Some(size) => format!("(Unknown<{size}>*)({})", expression(address, 0)),
+            None => format!("(Unknown*)({})", expression(address, 0)),
+        },
+        IRExpr::Argument(ordinal) => format!("arg{ordinal}"),
+        IRExpr::ExtractBytes {
+            value,
+            offset,
+            size,
+        } => format!("extractBytes<{offset}, {size}>({})", expression(value, 0)),
+        IRExpr::ZeroExtend { value, size } => {
+            format!("zeroExtend<{size}>({})", expression(value, 0))
+        }
+        IRExpr::ReplaceBytes {
+            original,
+            value,
+            offset,
+            size,
+        } => format!(
+            "replaceBytes<{offset}, {size}>({}, {})",
+            expression(original, 0),
+            expression(value, 0)
+        ),
         IRExpr::CU8(value) => format!("0x{value:x}"),
         IRExpr::CU32(value) => format!("0x{value:x}"),
         IRExpr::CU64(value) => format!("0x{value:x}"),
@@ -102,18 +113,6 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
             )
             .unwrap();
         }
-        IRInst::SetFlagsFrom { flags: set, expr } => {
-            writeln!(
-                output,
-                "{padding}setFlagsFrom([{}], {});",
-                flags(set),
-                expression(expr, 0)
-            )
-            .unwrap();
-        }
-        IRInst::ClearFlags { flags: set } => {
-            writeln!(output, "{padding}clearFlags([{}]);", flags(set)).unwrap();
-        }
         IRInst::Return(Some(value)) => {
             writeln!(output, "{padding}return {};", expression(value, 0)).unwrap();
         }
@@ -122,7 +121,9 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
         }
         IRInst::DeclareVariable { variable, ty } => {
             let ty = match ty {
-                VariableType::Bool => "boolean",
+                VariableType::Unknown(Some(size)) => format!("Unknown<{size}>"),
+                VariableType::Unknown(None) => "Unknown".to_string(),
+                VariableType::Bool => "Bool".to_string(),
             };
             writeln!(output, "{padding}let {}: {ty};", variable_name(*variable)).unwrap();
         }
@@ -135,15 +136,37 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
             )
             .unwrap();
         }
+        IRInst::LoadVariable { variable, address } => {
+            writeln!(
+                output,
+                "{padding}{} = *({});",
+                variable_name(*variable),
+                expression(address, 0)
+            )
+            .unwrap();
+        }
+        IRInst::StoreVariable { address, variable } => {
+            writeln!(
+                output,
+                "{padding}*({}) = {};",
+                expression(address, 0),
+                variable_name(*variable)
+            )
+            .unwrap();
+        }
         IRInst::If {
             condition,
             then_branch,
             else_branch,
         } => {
             writeln!(output, "{padding}if ({}) {{", expression(condition, 0)).unwrap();
-            instruction(output, then_branch, indent + 1);
+            for instr in then_branch {
+                instruction(output, instr, indent + 1);
+            }
             writeln!(output, "{padding}}} else {{").unwrap();
-            instruction(output, else_branch, indent + 1);
+            for instr in else_branch {
+                instruction(output, instr, indent + 1);
+            }
             writeln!(output, "{padding}}}").unwrap();
         }
         IRInst::CallSynthetic {
@@ -171,7 +194,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
     }
 }
 
-/// Render the complete tier 1 program, including its entry and source offsets.
+/// Render the complete tier 2 program, including its entry and source offsets.
 pub fn render(program: &Program) -> String {
     let mut output = String::new();
     match program.entry {
@@ -184,7 +207,14 @@ pub fn render(program: &Program) -> String {
         let parameters = function
             .parameters
             .iter()
-            .map(|register| format!("{register:?}"))
+            .map(|parameter| match parameter {
+                Parameter::Native { ordinal, register } => {
+                    format!("arg{ordinal}: Register<{register:?}>")
+                }
+                Parameter::Slot { variable, size } => {
+                    format!("{}: Unknown<{size}>", variable_name(*variable))
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ");
         writeln!(
@@ -194,14 +224,6 @@ pub fn render(program: &Program) -> String {
             function.entry_offset
         )
         .unwrap();
-        if !function.external_flags.is_empty() {
-            writeln!(
-                output,
-                "    // external flags: [{}]",
-                flags(&function.external_flags)
-            )
-            .unwrap();
-        }
         let mut previous_offset = Some(function.entry_offset);
         for (offset, instr) in &function.body {
             if previous_offset != Some(*offset) {

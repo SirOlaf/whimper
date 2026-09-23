@@ -1,19 +1,4 @@
-use std::collections::HashSet;
-
 use iced_x86::Register;
-
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub enum NativeFlag {
-    Carry,
-    Parity,
-    AuxCarry,
-    Zero,
-    Sign,
-    Trap,
-    InterruptEnable,
-    Direction,
-    Overflow,
-}
 
 #[derive(Debug, Clone)]
 pub struct Program {
@@ -25,11 +10,16 @@ pub struct Program {
 #[derive(Debug, Clone)]
 pub struct SyntheticFunction {
     pub entry_offset: usize,
-    /// Register families whose incoming values are used by this function or a callee.
-    pub parameters: Vec<Register>,
-    /// Flags read in this body before this body defines them.
-    pub external_flags: HashSet<NativeFlag>,
+    pub parameters: Vec<Parameter>,
     pub body: Vec<(usize, IRInst)>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Parameter {
+    /// An incoming machine register at the true entry point.
+    Native { ordinal: usize, register: Register },
+    /// An incoming value passed by a synthetic predecessor.
+    Slot { variable: VariableId, size: usize },
 }
 
 /// The identity of a synthetic function.
@@ -47,6 +37,7 @@ pub struct VariableId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VariableType {
+    Unknown(Option<usize>),
     Bool,
 }
 
@@ -66,8 +57,27 @@ pub enum IRExpr {
         rhs: Box<IRExpr>,
     },
     Deref(Box<IRExpr>),
-    Reg(Register),
-    Flag(NativeFlag),
+    /// A byte address explicitly cast to a pointer for a memory operation.
+    CastUnknownPtr {
+        address: Box<IRExpr>,
+        size: Option<usize>,
+    },
+    Argument(usize),
+    ExtractBytes {
+        value: Box<IRExpr>,
+        offset: usize,
+        size: usize,
+    },
+    ZeroExtend {
+        value: Box<IRExpr>,
+        size: usize,
+    },
+    ReplaceBytes {
+        original: Box<IRExpr>,
+        value: Box<IRExpr>,
+        offset: usize,
+        size: usize,
+    },
     CU8(u8),
     CU32(u32),
     CU64(u64),
@@ -85,13 +95,6 @@ pub enum IRInst {
         dest: IRExpr,
         src: IRExpr,
     },
-    SetFlagsFrom {
-        flags: HashSet<NativeFlag>,
-        expr: IRExpr,
-    },
-    ClearFlags {
-        flags: HashSet<NativeFlag>,
-    },
     Return(Option<IRExpr>),
 
     DeclareVariable {
@@ -102,12 +105,22 @@ pub enum IRInst {
         variable: VariableId,
         value: IRExpr,
     },
+    /// Read a non-absolute address into a local Unknown slot.
+    LoadVariable {
+        variable: VariableId,
+        address: IRExpr,
+    },
+    /// Write a local Unknown slot back to a non-absolute address.
+    StoreVariable {
+        address: IRExpr,
+        variable: VariableId,
+    },
 
     /// Each arm is a terminal transfer: a synthetic call, jump, or end.
     If {
         condition: IRExpr,
-        then_branch: Box<IRInst>,
-        else_branch: Box<IRInst>,
+        then_branch: Vec<IRInst>,
+        else_branch: Vec<IRInst>,
     },
 
     /// Tail call into a shared synthetic function; the caller does not resume.
