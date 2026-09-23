@@ -42,12 +42,14 @@ pub struct LoopId {
     pub id: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VariableType {
     /// A value with an optional known width in bytes.
     Unknown(Option<usize>),
     /// A pointer whose pointee type has not been recovered.
     UnknownPointer,
+    /// A pointer whose pointee type is supported by tier 5 evidence.
+    Pointer(Box<VariableType>),
     Bool,
     /// Integer-shaped, with no signedness evidence. Width is in bits.
     Integer(usize),

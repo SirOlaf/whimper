@@ -27,6 +27,32 @@ struct PointerUse {
     other: bool,
 }
 
+#[derive(Clone, Default, PartialEq, Eq)]
+struct PointeeEvidence {
+    candidate: Option<VariableType>,
+    conflicting: bool,
+}
+
+impl PointeeEvidence {
+    fn merge(&mut self, other: &Self) {
+        if self.conflicting || other.conflicting {
+            self.candidate = None;
+            self.conflicting = true;
+        } else if let Some(candidate) = &other.candidate {
+            if self
+                .candidate
+                .as_ref()
+                .is_some_and(|current| current != candidate)
+            {
+                self.candidate = None;
+                self.conflicting = true;
+            } else {
+                self.candidate = Some(candidate.clone());
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct Analysis {
     types: HashMap<Slot, VariableType>,
@@ -34,6 +60,7 @@ struct Analysis {
     copies: Vec<(Slot, Slot)>,
     pointer_uses: HashMap<Slot, PointerUse>,
     derived_addresses: Vec<(Slot, Slot)>,
+    pointees: HashMap<Slot, PointeeEvidence>,
 }
 
 fn direct_slot(expr: &IRExpr, owner: SyntheticFunctionId) -> Option<Slot> {
@@ -53,16 +80,24 @@ fn literal_size(expr: &IRExpr) -> Option<usize> {
     }
 }
 
-fn width(ty: VariableType) -> Option<usize> {
+fn width(ty: &VariableType) -> Option<usize> {
     match ty {
-        VariableType::Unknown(Some(size)) if matches!(size, 1 | 2 | 4 | 8) => Some(size),
+        VariableType::Unknown(Some(size)) if matches!(size, 1 | 2 | 4 | 8) => Some(*size),
+        _ => None,
+    }
+}
+
+fn pointee_width(ty: &VariableType) -> Option<usize> {
+    match ty {
+        VariableType::Bool => Some(1),
+        VariableType::Integer(bits) | VariableType::UnsignedInteger(bits) => Some(bits / 8),
         _ => None,
     }
 }
 
 impl Analysis {
     fn width(&self, slot: Slot) -> Option<usize> {
-        self.types.get(&slot).copied().and_then(width)
+        self.types.get(&slot).and_then(width)
     }
 
     fn integer(&mut self, slot: Slot, unsigned: bool) {
@@ -92,7 +127,7 @@ impl Analysis {
             return true;
         }
         if let Some(slot) = direct_slot(expr, owner) {
-            let original = self.types.get(&slot).copied();
+            let original = self.types.get(&slot).cloned();
             return original.is_some_and(|ty| {
                 matches!(
                     self.inferred(slot, ty),
@@ -508,6 +543,136 @@ impl Analysis {
         }
     }
 
+    fn scalar_type(&self, slot: Slot) -> Option<VariableType> {
+        let original = self.types.get(&slot)?.clone();
+        let inferred = self.inferred(slot, original);
+        pointee_width(&inferred).map(|_| inferred)
+    }
+
+    fn record_pointee(&mut self, address: &IRExpr, ty: VariableType, owner: SyntheticFunctionId) {
+        let address = match address {
+            IRExpr::MemoryAddress { address, size } => {
+                if size.is_some_and(|size| Some(size) != pointee_width(&ty)) {
+                    return;
+                }
+                address.as_ref()
+            }
+            _ => address,
+        };
+        if let Some(slot) = direct_slot(address, owner)
+            && self.width(slot) == Some(8)
+        {
+            self.pointees
+                .entry(slot)
+                .or_default()
+                .merge(&PointeeEvidence {
+                    candidate: Some(ty),
+                    conflicting: false,
+                });
+        }
+    }
+
+    fn pointee_assignment(&mut self, dest: Slot, value: &IRExpr, owner: SyntheticFunctionId) {
+        if let IRExpr::Deref(address) = value
+            && let Some(ty) = self.scalar_type(dest)
+        {
+            self.record_pointee(address, ty, owner);
+        }
+    }
+
+    fn pointee_instruction(
+        &mut self,
+        instr: &IRInst,
+        owner: SyntheticFunctionId,
+        program: &Program,
+    ) {
+        match instr {
+            IRInst::DeclareAndAssignVariable {
+                variable, value, ..
+            }
+            | IRInst::AssignVariable { variable, value } => {
+                self.pointee_assignment(Slot::Variable(*variable), value, owner);
+            }
+            IRInst::Assign { dest, src } => {
+                if let Some(slot) = direct_slot(dest, owner) {
+                    self.pointee_assignment(slot, src, owner);
+                }
+                if let IRExpr::Deref(address) = dest
+                    && let Some(src) = direct_slot(src, owner)
+                    && let Some(ty) = self.scalar_type(src)
+                {
+                    self.record_pointee(address, ty, owner);
+                }
+            }
+            IRInst::LoadVariable { variable, address } => {
+                if let Some(ty) = self.scalar_type(Slot::Variable(*variable)) {
+                    self.record_pointee(address, ty, owner);
+                }
+            }
+            IRInst::StoreVariable { address, variable } => {
+                if let Some(ty) = self.scalar_type(Slot::Variable(*variable)) {
+                    self.record_pointee(address, ty, owner);
+                }
+            }
+            IRInst::CallSynthetic {
+                function,
+                arguments,
+            } => {
+                if let Some(callee) = program.functions.get(function.id) {
+                    for (parameter, argument) in callee.parameters.iter().zip(arguments) {
+                        let dest = match parameter {
+                            Parameter::Argument { ordinal, .. } => {
+                                Slot::Argument(*function, *ordinal)
+                            }
+                            Parameter::Slot { variable, .. } => Slot::Variable(*variable),
+                        };
+                        self.pointee_assignment(dest, argument, owner);
+                    }
+                }
+            }
+            IRInst::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                for instr in then_branch.iter().chain(else_branch) {
+                    self.pointee_instruction(instr, owner, program);
+                }
+            }
+            IRInst::While { body, .. } => {
+                for (_, instr) in body {
+                    self.pointee_instruction(instr, owner, program);
+                }
+            }
+            IRInst::DeclareVariable { .. }
+            | IRInst::Return(_)
+            | IRInst::Break
+            | IRInst::Continue
+            | IRInst::ContinueLoop(_)
+            | IRInst::Jump(_)
+            | IRInst::End => {}
+        }
+    }
+
+    fn propagate_pointees(&mut self) {
+        loop {
+            let mut changed = false;
+            for &(dest, src) in &self.copies {
+                let mut merged = self.pointees.get(&dest).cloned().unwrap_or_default();
+                merged.merge(&self.pointees.get(&src).cloned().unwrap_or_default());
+                for slot in [dest, src] {
+                    if self.pointees.get(&slot) != Some(&merged) {
+                        self.pointees.insert(slot, merged.clone());
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
     fn inferred_pointer(&self, slot: Slot, original: VariableType) -> VariableType {
         if original != VariableType::Unknown(Some(8)) {
             return original;
@@ -518,7 +683,12 @@ impl Analysis {
             .get(&slot)
             .is_some_and(|evidence| evidence.integer);
         if uses.dereferenced && !uses.other && !integer {
-            VariableType::UnknownPointer
+            self.pointees
+                .get(&slot)
+                .and_then(|evidence| evidence.candidate.clone())
+                .map_or(VariableType::UnknownPointer, |ty| {
+                    VariableType::Pointer(Box::new(ty))
+                })
         } else {
             original
         }
@@ -550,7 +720,7 @@ impl Analysis {
     }
 
     fn inferred(&self, slot: Slot, original: VariableType) -> VariableType {
-        let Some(size) = width(original) else {
+        let Some(size) = width(&original) else {
             return original;
         };
         let evidence = self.evidence.get(&slot).copied().unwrap_or_default();
@@ -573,7 +743,7 @@ fn retype(instr: &mut IRInst, analysis: &Analysis) {
         IRInst::DeclareVariable { variable, ty }
         | IRInst::DeclareAndAssignVariable { variable, ty, .. } => {
             let slot = Slot::Variable(*variable);
-            *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, *ty));
+            *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, ty.clone()));
         }
         IRInst::If {
             then_branch,
@@ -597,7 +767,7 @@ fn declarations(instr: &IRInst, analysis: &mut Analysis) {
     match instr {
         IRInst::DeclareVariable { variable, ty }
         | IRInst::DeclareAndAssignVariable { variable, ty, .. } => {
-            analysis.types.insert(Slot::Variable(*variable), *ty);
+            analysis.types.insert(Slot::Variable(*variable), ty.clone());
         }
         IRInst::If {
             then_branch,
@@ -661,10 +831,12 @@ pub fn run(program: &mut Program) {
         for parameter in &function.parameters {
             match parameter {
                 Parameter::Argument { ordinal, ty } => {
-                    analysis.types.insert(Slot::Argument(owner, *ordinal), *ty);
+                    analysis
+                        .types
+                        .insert(Slot::Argument(owner, *ordinal), ty.clone());
                 }
                 Parameter::Slot { variable, ty } => {
-                    analysis.types.insert(Slot::Variable(*variable), *ty);
+                    analysis.types.insert(Slot::Variable(*variable), ty.clone());
                 }
             }
         }
@@ -697,17 +869,24 @@ pub fn run(program: &mut Program) {
         }
     }
     analysis.propagate_pointer_uses();
+    for (index, function) in program.functions.iter().enumerate() {
+        let owner = SyntheticFunctionId { id: index };
+        for (_, instr) in &function.body {
+            analysis.pointee_instruction(instr, owner, program);
+        }
+    }
+    analysis.propagate_pointees();
     for (index, function) in program.functions.iter_mut().enumerate() {
         let owner = SyntheticFunctionId { id: index };
         for parameter in &mut function.parameters {
             match parameter {
                 Parameter::Argument { ordinal, ty } => {
                     let slot = Slot::Argument(owner, *ordinal);
-                    *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, *ty));
+                    *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, ty.clone()));
                 }
                 Parameter::Slot { variable, ty } => {
                     let slot = Slot::Variable(*variable);
-                    *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, *ty));
+                    *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, ty.clone()));
                 }
             }
         }

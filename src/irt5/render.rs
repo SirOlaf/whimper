@@ -18,7 +18,7 @@ impl RenderTypes {
         match instr {
             IRInst::DeclareVariable { variable, ty }
             | IRInst::DeclareAndAssignVariable { variable, ty, .. } => {
-                self.variables.insert(*variable, *ty);
+                self.variables.insert(*variable, ty.clone());
             }
             IRInst::If {
                 then_branch,
@@ -43,10 +43,10 @@ impl RenderTypes {
         for parameter in &function.parameters {
             match parameter {
                 Parameter::Argument { ordinal, ty } => {
-                    slots.arguments.insert(*ordinal, *ty);
+                    slots.arguments.insert(*ordinal, ty.clone());
                 }
                 Parameter::Slot { variable, ty } => {
-                    slots.variables.insert(*variable, *ty);
+                    slots.variables.insert(*variable, ty.clone());
                 }
             }
         }
@@ -58,8 +58,8 @@ impl RenderTypes {
 
     fn direct_type(&self, expr: &IRExpr) -> Option<VariableType> {
         match expr {
-            IRExpr::Argument(ordinal) => self.arguments.get(ordinal).copied(),
-            IRExpr::Variable(variable) => self.variables.get(variable).copied(),
+            IRExpr::Argument(ordinal) => self.arguments.get(ordinal).cloned(),
+            IRExpr::Variable(variable) => self.variables.get(variable).cloned(),
             _ => None,
         }
     }
@@ -83,7 +83,10 @@ impl RenderTypes {
     }
 
     fn pointer_address(&self, expr: &IRExpr) -> bool {
-        if self.direct_type(expr) == Some(VariableType::UnknownPointer) {
+        if matches!(
+            self.direct_type(expr),
+            Some(VariableType::UnknownPointer | VariableType::Pointer(_))
+        ) {
             return true;
         }
         match expr {
@@ -110,12 +113,13 @@ fn variable_name(id: VariableId) -> String {
 
 fn type_name(ty: VariableType) -> String {
     match ty {
-        VariableType::Unknown(Some(size)) => format!("Unknown<{size}>"),
+        VariableType::Unknown(Some(size)) => format!("Unknown{size}"),
         VariableType::Unknown(None) => "Unknown".to_string(),
         VariableType::UnknownPointer => "Unknown*".to_string(),
+        VariableType::Pointer(pointee) => format!("{}*", type_name(*pointee)),
         VariableType::Bool => "Bool".to_string(),
-        VariableType::Integer(bits) => format!("i<{bits}>"),
-        VariableType::UnsignedInteger(bits) => format!("u<{bits}>"),
+        VariableType::Integer(bits) => format!("i{bits}"),
+        VariableType::UnsignedInteger(bits) => format!("u{bits}"),
     }
 }
 
@@ -241,7 +245,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize, types: &Rende
             writeln!(output, "{padding}return;").unwrap();
         }
         IRInst::DeclareVariable { variable, ty } => {
-            let ty = type_name(*ty);
+            let ty = type_name(ty.clone());
             writeln!(output, "{padding}let {}: {ty};", variable_name(*variable)).unwrap();
         }
         IRInst::DeclareAndAssignVariable {
@@ -249,7 +253,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize, types: &Rende
             ty,
             value,
         } => {
-            let ty = type_name(*ty);
+            let ty = type_name(ty.clone());
             writeln!(
                 output,
                 "{padding}let {}: {ty} = {};",
@@ -410,10 +414,10 @@ pub fn render(program: &Program) -> String {
             .iter()
             .map(|parameter| match parameter {
                 Parameter::Argument { ordinal, ty } => {
-                    format!("arg{ordinal}: {}", type_name(*ty))
+                    format!("arg{ordinal}: {}", type_name(ty.clone()))
                 }
                 Parameter::Slot { variable, ty } => {
-                    format!("{}: {}", variable_name(*variable), type_name(*ty))
+                    format!("{}: {}", variable_name(*variable), type_name(ty.clone()))
                 }
             })
             .collect::<Vec<_>>()
