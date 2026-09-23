@@ -2,8 +2,10 @@
 //! separate from the lossless tier 5 translation.
 pub mod arithmetic;
 mod effects;
+mod eliminate_variables;
 mod infer_types;
 pub mod ir;
+mod relocate_variables;
 pub mod render;
 pub mod shapes;
 pub mod unoptimize;

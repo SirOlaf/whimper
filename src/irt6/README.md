@@ -97,6 +97,15 @@ Once promoted, a still-valid cached read of byte zero compared with zero can
 be represented as `string.len() == 0`. The length expression scans memory for
 the terminator and is treated as a memory read by later analyses.
 
+After the type-aware rewrites, `relocate_variables.rs` moves a local into the
+only branch that uses it when its declaration is immediately before the `if`.
+Pure initializers can cross the condition. A read of byte zero can also cross
+an equality check against the same CString's length: that check necessarily
+reads byte zero on either outcome. Other memory reads and trapping expressions
+stay in place. `eliminate_variables.rs` then folds a single-use local into an
+adjacent copy with the same type, preserving the initializer's evaluation
+point and leaving loop-carried variables intact.
+
 The boolean-return rule replaces an `if` whose two branches only return zero
 and one with a return of the condition's boolean value or its negation. The
 constants must have the same width. The condition is still evaluated once,

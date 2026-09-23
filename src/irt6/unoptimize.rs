@@ -9,8 +9,9 @@ use std::{collections::HashMap, fmt::Write};
 use super::{
     arithmetic::{Bindings, Context, Kind, Value},
     effects::{Effects, repeatable},
-    infer_types,
+    eliminate_variables, infer_types,
     ir::{IRBinOpKind, IRExpr, IRInst, LoopCondition, Program, VariableId, field_address},
+    relocate_variables,
     shapes::{self, LoopAnalysis},
 };
 
@@ -928,6 +929,10 @@ pub fn run_with_options(program: &mut Program, options: Options) -> Report {
             &mut report,
         );
     }
+    // Type promotion exposes CString length checks. Re-scope locals after
+    // those rewrites, then collapse copies made adjacent by the move.
+    relocate_variables::run(program);
+    eliminate_variables::run(program);
     for function in &program.functions {
         let context = Context::from_function(function);
         for (_, instr) in &function.body {
