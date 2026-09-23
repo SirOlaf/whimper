@@ -120,7 +120,7 @@ impl FunctionLifter {
     }
 
     fn write_register(&mut self, register: Register) -> VariableId {
-        let variable = self.slot(VariableType::Unknown(Some(register.size())));
+        let variable = self.slot(VariableType::Register(register));
         let full = register.full_register();
         let written = IRExpr::Variable(variable);
         let next = if register == full {
@@ -209,6 +209,10 @@ impl FunctionLifter {
                     t1::IRExpr::Reg(register) => Some(register.size()),
                     _ => source_width(src),
                 };
+                let source_register = match src {
+                    t1::IRExpr::Reg(register) => Some(*register),
+                    _ => None,
+                };
                 let src = self.expr(src, width, &mut before);
                 match dest {
                     t1::IRExpr::Reg(register) => {
@@ -225,7 +229,10 @@ impl FunctionLifter {
                             size: width,
                         };
                         if !global {
-                            let variable = self.slot(VariableType::Unknown(width));
+                            let ty = source_register
+                                .map(VariableType::Register)
+                                .unwrap_or(VariableType::Unknown(width));
+                            let variable = self.slot(ty);
                             before.push(IRInst::AssignVariable {
                                 variable,
                                 value: src,
@@ -308,7 +315,7 @@ fn lift_function(id: usize, source: &t1::SyntheticFunction, entry: bool) -> Synt
                     .insert(register.full_register(), IRExpr::Variable(variable));
                 Parameter::Slot {
                     variable,
-                    size: register.size(),
+                    register: *register,
                 }
             }
         })

@@ -18,8 +18,11 @@ pub struct SyntheticFunction {
 pub enum Parameter {
     /// An incoming machine register at the true entry point.
     Native { ordinal: usize, register: Register },
-    /// An incoming value passed by a synthetic predecessor.
-    Slot { variable: VariableId, size: usize },
+    /// An incoming register value passed by a synthetic predecessor.
+    Slot {
+        variable: VariableId,
+        register: Register,
+    },
 }
 
 /// The identity of a synthetic function.
@@ -38,6 +41,8 @@ pub struct VariableId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VariableType {
     Unknown(Option<usize>),
+    /// A slot associated with this exact machine register.
+    Register(Register),
     Bool,
 }
 
