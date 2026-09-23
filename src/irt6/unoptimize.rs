@@ -9,7 +9,7 @@ use std::{collections::HashMap, fmt::Write};
 use super::{
     arithmetic::{Bindings, Context, Kind, Value},
     effects::{Effects, repeatable},
-    ir::{IRBinOpKind, IRExpr, IRInst, LoopCondition, Program, VariableId},
+    ir::{IRBinOpKind, IRExpr, IRInst, LoopCondition, Program, VariableId, field_address},
     shapes::{self, LoopAnalysis},
 };
 
@@ -42,30 +42,133 @@ pub struct Report {
 }
 
 #[derive(Clone, Default)]
-struct Facts(Vec<Value>);
+struct Facts {
+    conditions: Vec<Value>,
+    /// A variable last loaded from an address that has not since been written.
+    loaded_from: HashMap<VariableId, IRExpr>,
+}
+
+fn access(address: &IRExpr) -> Option<(&IRExpr, usize, usize)> {
+    let IRExpr::MemoryAddress {
+        address,
+        size: Some(size),
+    } = address
+    else {
+        return None;
+    };
+    let (base, offset) = field_address(address)?;
+    Some((base, offset, offset.checked_add(*size)?))
+}
+
+fn disjoint_accesses(left: &IRExpr, right: &IRExpr) -> bool {
+    let (Some((left_base, left_start, left_end)), Some((right_base, right_start, right_end))) =
+        (access(left), access(right))
+    else {
+        return false;
+    };
+    left_base == right_base && (left_end <= right_start || right_end <= left_start)
+}
+
+fn writes_disjoint(instr: &IRInst, address: &IRExpr) -> bool {
+    match instr {
+        IRInst::Assign {
+            dest: IRExpr::Deref(written),
+            ..
+        }
+        | IRInst::CompoundAssign {
+            dest: IRExpr::Deref(written),
+            ..
+        } => disjoint_accesses(address, written),
+        IRInst::StoreVariable {
+            address: written, ..
+        } => disjoint_accesses(address, written),
+        IRInst::If {
+            then_branch,
+            else_branch,
+            ..
+        } => then_branch
+            .iter()
+            .chain(else_branch)
+            .all(|instr| writes_disjoint(instr, address)),
+        IRInst::While { body, .. } => body
+            .iter()
+            .all(|(_, instr)| writes_disjoint(instr, address)),
+        _ => {
+            let mut effects = Effects::default();
+            effects.instruction(instr);
+            !effects.memory_write && !effects.unknown_write
+        }
+    }
+}
 
 impl Facts {
     fn assume(&mut self, expression: &IRExpr, truth: bool, context: &Context) {
         if repeatable(expression) {
             let value = context.value(expression);
-            self.0.push(if truth { value } else { value.negated() });
+            self.conditions
+                .push(if truth { value } else { value.negated() });
         }
     }
 
-    fn invalidate(&mut self, effects: &Effects) {
+    fn invalidate(&mut self, effects: &Effects, writes_disjoint: impl Fn(&IRExpr) -> bool) {
         if effects.unknown_write {
-            self.0.clear();
+            self.conditions.clear();
+            self.loaded_from.clear();
             return;
         }
-        self.0
+        self.conditions
             .retain(|fact| !effects.writes.iter().any(|variable| fact.reads(*variable)));
+        self.loaded_from.retain(|variable, address| {
+            (!effects.memory_write || writes_disjoint(address))
+                && !effects.writes.contains(variable)
+                && !effects
+                    .writes
+                    .iter()
+                    .any(|written| Effects::of_expression(address).reads.contains(written))
+        });
+    }
+
+    fn observe(&mut self, instr: &IRInst) {
+        let loaded = match instr {
+            IRInst::AssignVariable {
+                variable,
+                value: IRExpr::Deref(address),
+            }
+            | IRInst::DeclareAndAssignVariable {
+                variable,
+                value: IRExpr::Deref(address),
+                ..
+            }
+            | IRInst::Assign {
+                dest: IRExpr::Variable(variable),
+                src: IRExpr::Deref(address),
+            } => Some((*variable, address.as_ref())),
+            IRInst::LoadVariable { variable, address } => Some((*variable, address)),
+            _ => None,
+        };
+        if let Some((variable, address)) = loaded
+            && repeatable(address)
+            && !Effects::of_expression(address).reads.contains(&variable)
+        {
+            self.loaded_from.insert(variable, address.clone());
+        }
+    }
+
+    fn destination_contains(&self, destination: &IRExpr, dividend: &IRExpr) -> bool {
+        match (destination, dividend) {
+            (IRExpr::Variable(destination), IRExpr::Variable(dividend)) => destination == dividend,
+            (IRExpr::Deref(address), IRExpr::Variable(variable)) => {
+                self.loaded_from.get(variable) == Some(address.as_ref())
+            }
+            _ => false,
+        }
     }
 
     fn is_zero(&self, value: &Value) -> Option<bool> {
         if let Kind::Constant(constant) = value.kind {
             return Some(constant == 0);
         }
-        self.0.iter().find_map(|fact| {
+        self.conditions.iter().find_map(|fact| {
             let Kind::Binary { kind, lhs, rhs } = &fact.kind else {
                 return None;
             };
@@ -99,10 +202,31 @@ const RULES: &[Rule] = &[
         apply: recover_remainder,
     },
     Rule {
+        name: "eliminate-guarded-modulo",
+        apply: eliminate_guarded_modulo,
+    },
+    Rule {
         name: "compound-assignment",
         apply: recover_compound_assignment,
     },
 ];
+
+fn eliminate_guarded_modulo(
+    instr: &mut IRInst,
+    offset: usize,
+    context: &Context,
+    facts: &Facts,
+    _options: &Options,
+) -> Option<usize> {
+    let shape = shapes::guarded_modulo(instr, context)?;
+    if !facts.destination_contains(&shape.destination, &shape.dividend) {
+        return None;
+    }
+    // On the skipped path dividend < stride, so the stride is nonzero and
+    // dividend % stride is dividend. The destination already holds it.
+    *instr = shape.replacement;
+    Some(offset)
+}
 
 fn recover_compound_assignment(
     instr: &mut IRInst,
@@ -378,11 +502,12 @@ fn sequence<'a>(
         rewrite(instr, offset, context, &facts, options, report);
         let mut effects = Effects::default();
         effects.instruction(instr);
-        facts.invalidate(&effects);
+        facts.invalidate(&effects, |address| writes_disjoint(instr, address));
+        facts.observe(instr);
     }
 }
 
-fn rewrite(
+fn rewrite_local(
     instr: &mut IRInst,
     offset: usize,
     context: &Context,
@@ -413,6 +538,18 @@ fn rewrite(
             report.budget_exhausted = true;
         }
     }
+}
+
+fn rewrite(
+    instr: &mut IRInst,
+    offset: usize,
+    context: &Context,
+    facts: &Facts,
+    options: &Options,
+    report: &mut Report,
+) {
+    rewrite_local(instr, offset, context, facts, options, report);
+    let before_children = report.rewrites.len();
     match instr {
         IRInst::If {
             condition,
@@ -444,7 +581,10 @@ fn rewrite(
                 effects.instruction(instr);
             }
             let mut invariants = facts.clone();
-            invariants.invalidate(&effects);
+            invariants.invalidate(&effects, |address| {
+                body.iter()
+                    .all(|(_, instr)| writes_disjoint(instr, address))
+            });
             sequence(
                 body.iter_mut().map(|(offset, instr)| (*offset, instr)),
                 context,
@@ -454,6 +594,11 @@ fn rewrite(
             );
         }
         _ => {}
+    }
+    // A child loop can become a modulo assignment under its surrounding
+    // guard. Revisit that guard once its child rewrites are visible.
+    if report.rewrites.len() > before_children {
+        rewrite_local(instr, offset, context, facts, options, report);
     }
 }
 
@@ -510,6 +655,18 @@ pub fn run_with_options(program: &mut Program, options: Options) -> Report {
             function.entry_offset,
             &context,
             &uses,
+            &mut report,
+        );
+        // Collapsing a temporary can expose the modulo assignment directly
+        // inside its guard, so run the local rules on the resulting IR.
+        sequence(
+            function
+                .body
+                .iter_mut()
+                .map(|(offset, instr)| (*offset, instr)),
+            &context,
+            Facts::default(),
+            &options,
             &mut report,
         );
         for (_, instr) in &function.body {

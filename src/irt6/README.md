@@ -54,7 +54,8 @@ selection at that node, then the driver descends into structured children. A
 local limit of 16 rewrites and a total limit of 256 bound code growth. Hitting a
 limit keeps valid IR and records the stop in the report. This initial driver is
 a deterministic normalization pipeline; it does not yet search alternative
-equivalent programs or revisit parents after child rewrites.
+equivalent programs. Parents are revisited after child rewrites, and a second
+pass follows temporary-assignment collapse so newly exposed shapes can match.
 
 The first restructuring rule proves that a surrounding branch implies the first
 check of a `do ... while`, then changes it to a `while`. A prefix of pure local
@@ -67,6 +68,13 @@ a known common integer width, an invariant stride, and exactly one update with
 no other effects. The replacement is `x = x u% s`. Unsigned modulo is a binary
 operator whose width comes from its operands and whose divisor must be nonzero.
 It renders with multiplicative precedence.
+
+The guarded-modulo rule removes `if (x u>= s) { x = x u% s; }` when the skipped
+path already leaves the destination equal to `x`. It also handles the opposite
+branch of `x u< s`. A variable destination can be its own dividend; a memory
+destination can match a prior load from the same address. Known nonoverlapping
+field writes preserve that load fact, while other memory writes invalidate it.
+The false path has `x < s`, so `s` is nonzero and `x u% s` equals `x`.
 
 The compound-assignment rule recognizes `a = a op b` for assignable binary
 operators and renders the replacement as `a op= b`. It also recognizes
