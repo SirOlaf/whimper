@@ -198,8 +198,8 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
     }
 }
 
-/// Render the complete tier 2 program, including its entry and source offsets.
-pub fn render(program: &Program) -> String {
+/// Render the complete tier 2 program, optionally including source address comments.
+pub fn render(program: &Program, address_comments: bool) -> String {
     let mut output = String::new();
     match program.entry {
         Some(entry) => writeln!(output, "// entry: {}", function_name(entry)).unwrap(),
@@ -221,16 +221,14 @@ pub fn render(program: &Program) -> String {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        writeln!(
-            output,
-            "\nfunction {}({parameters}) {{ // 0x{:x}",
-            function_name(id),
-            function.entry_offset
-        )
-        .unwrap();
+        write!(output, "\nfunction {}({parameters}) {{", function_name(id)).unwrap();
+        if address_comments {
+            write!(output, " // 0x{:x}", function.entry_offset).unwrap();
+        }
+        writeln!(output).unwrap();
         let mut previous_offset = Some(function.entry_offset);
         for (offset, instr) in &function.body {
-            if previous_offset != Some(*offset) {
+            if address_comments && previous_offset != Some(*offset) {
                 writeln!(output, "    // 0x{offset:x}").unwrap();
                 previous_offset = Some(*offset);
             }

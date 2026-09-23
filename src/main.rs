@@ -40,5 +40,6 @@ fn main() {
     if args.iter().any(|arg| arg == "--arithmetic") {
         print!("{}\n", report.render());
     }
-    print!("{}", irt6::render::render(&irt6program));
+    let address_comments = args.iter().any(|arg| arg == "--address-comments");
+    print!("{}", irt6::render::render(&irt6program, address_comments));
 }
