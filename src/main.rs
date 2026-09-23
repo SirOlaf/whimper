@@ -16,5 +16,5 @@ fn main() {
     let irt0program = irt0::lift(CODE, base_offset);
 
     let irt1program = irt1::lift(&irt0program);
-    println!("{irt1program:#?}");
+    print!("{}", irt1::render::render(&irt1program));
 }

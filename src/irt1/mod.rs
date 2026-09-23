@@ -1,5 +1,6 @@
 pub mod ir;
 pub mod prune_flags;
+pub mod render;
 
 use std::collections::{HashMap, HashSet};
 
