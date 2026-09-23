@@ -74,8 +74,8 @@ pub enum IRExpr {
         rhs: Box<IRExpr>,
     },
     Deref(Box<IRExpr>),
-    /// A byte address explicitly cast to a pointer for a memory operation.
-    CastUnknownPtr {
+    /// A memory address and its access width, independent of its pointer type.
+    MemoryAddress {
         address: Box<IRExpr>,
         /// Memory access width in bytes, not the pointee type's size.
         size: Option<usize>,

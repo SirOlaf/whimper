@@ -135,7 +135,7 @@ impl Analysis {
 
     fn pointer_address(&mut self, expr: &IRExpr, owner: SyntheticFunctionId) {
         match expr {
-            IRExpr::CastUnknownPtr { address, .. } => self.pointer_address(address, owner),
+            IRExpr::MemoryAddress { address, .. } => self.pointer_address(address, owner),
             _ => {
                 if let Some(slot) = direct_slot(expr, owner) {
                     self.pointer_use(slot, true);
@@ -166,7 +166,7 @@ impl Analysis {
                 self.pointer_value(original, owner);
                 self.pointer_value(value, owner);
             }
-            IRExpr::CastUnknownPtr { address: value, .. }
+            IRExpr::MemoryAddress { address: value, .. }
             | IRExpr::ExtractBytes { value, .. }
             | IRExpr::ZeroExtend { value, .. }
             | IRExpr::Not(value) => self.pointer_value(value, owner),
@@ -210,7 +210,7 @@ impl Analysis {
                 self.address(value, owner);
             }
             IRExpr::Deref(inner)
-            | IRExpr::CastUnknownPtr { address: inner, .. }
+            | IRExpr::MemoryAddress { address: inner, .. }
             | IRExpr::ExtractBytes { value: inner, .. }
             | IRExpr::ZeroExtend { value: inner, .. }
             | IRExpr::Not(inner) => self.address(inner, owner),
@@ -247,7 +247,7 @@ impl Analysis {
                 self.expression(lhs, owner);
                 self.expression(rhs, owner);
             }
-            IRExpr::Deref(address) | IRExpr::CastUnknownPtr { address, .. } => {
+            IRExpr::Deref(address) | IRExpr::MemoryAddress { address, .. } => {
                 self.address(address, owner);
                 self.expression(address, owner);
             }

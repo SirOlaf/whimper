@@ -60,7 +60,7 @@ fn expression(expr: &t4::IRExpr) -> IRExpr {
             rhs: Box::new(expression(rhs)),
         },
         t4::IRExpr::Deref(address) => IRExpr::Deref(Box::new(expression(address))),
-        t4::IRExpr::CastUnknownPtr { address, size } => IRExpr::CastUnknownPtr {
+        t4::IRExpr::CastUnknownPtr { address, size } => IRExpr::MemoryAddress {
             address: Box::new(expression(address)),
             size: *size,
         },

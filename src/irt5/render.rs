@@ -1,11 +1,103 @@
 //! A readable view of tier 5 for manual debugging.
 
-use std::fmt::Write;
+use std::{collections::HashMap, fmt::Write};
 
 use super::ir::{
-    IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, SyntheticFunctionId,
-    VariableId, VariableType,
+    IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, SyntheticFunction,
+    SyntheticFunctionId, VariableId, VariableType,
 };
+
+#[derive(Default)]
+struct RenderTypes {
+    arguments: HashMap<usize, VariableType>,
+    variables: HashMap<VariableId, VariableType>,
+}
+
+impl RenderTypes {
+    fn collect_instruction(&mut self, instr: &IRInst) {
+        match instr {
+            IRInst::DeclareVariable { variable, ty } => {
+                self.variables.insert(*variable, *ty);
+            }
+            IRInst::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                for instr in then_branch.iter().chain(else_branch) {
+                    self.collect_instruction(instr);
+                }
+            }
+            IRInst::While { body, .. } => {
+                for (_, instr) in body {
+                    self.collect_instruction(instr);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn from_function(function: &SyntheticFunction) -> Self {
+        let mut slots = Self::default();
+        for parameter in &function.parameters {
+            match parameter {
+                Parameter::Argument { ordinal, ty } => {
+                    slots.arguments.insert(*ordinal, *ty);
+                }
+                Parameter::Slot { variable, ty } => {
+                    slots.variables.insert(*variable, *ty);
+                }
+            }
+        }
+        for (_, instr) in &function.body {
+            slots.collect_instruction(instr);
+        }
+        slots
+    }
+
+    fn direct_type(&self, expr: &IRExpr) -> Option<VariableType> {
+        match expr {
+            IRExpr::Argument(ordinal) => self.arguments.get(ordinal).copied(),
+            IRExpr::Variable(variable) => self.variables.get(variable).copied(),
+            _ => None,
+        }
+    }
+
+    fn integer_offset(&self, expr: &IRExpr) -> bool {
+        if matches!(
+            self.direct_type(expr),
+            Some(VariableType::Integer(_) | VariableType::UnsignedInteger(_))
+        ) {
+            return true;
+        }
+        match expr {
+            IRExpr::CU8(_) | IRExpr::CU32(_) | IRExpr::CU64(_) => true,
+            IRExpr::BinOp {
+                kind: IRBinOpKind::Add | IRBinOpKind::Sub | IRBinOpKind::Shl,
+                lhs,
+                rhs,
+            } => self.integer_offset(lhs) && self.integer_offset(rhs),
+            _ => false,
+        }
+    }
+
+    fn pointer_address(&self, expr: &IRExpr) -> bool {
+        if self.direct_type(expr) == Some(VariableType::UnknownPointer) {
+            return true;
+        }
+        match expr {
+            IRExpr::BinOp {
+                kind: IRBinOpKind::Add,
+                lhs,
+                rhs,
+            } => {
+                (self.pointer_address(lhs) && self.integer_offset(rhs))
+                    || (self.integer_offset(lhs) && self.pointer_address(rhs))
+            }
+            _ => false,
+        }
+    }
+}
 
 fn function_name(id: SyntheticFunctionId) -> String {
     format!("fn_{}", id.id)
@@ -51,12 +143,19 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 7,
         IRExpr::BinOp { .. } => 5,
-        IRExpr::Not(..) | IRExpr::Deref(..) | IRExpr::CastUnknownPtr { .. } => 6,
+        IRExpr::Not(..) | IRExpr::Deref(..) | IRExpr::MemoryAddress { .. } => 6,
         _ => 7,
     }
 }
 
-fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
+fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> String {
+    // MemoryAddress carries the access width; a pointer-typed address needs
+    // no cast in the output.
+    if let IRExpr::MemoryAddress { address, .. } = expr
+        && types.pointer_address(address)
+    {
+        return expression(address, parent_precedence, types);
+    }
     let own_precedence = precedence(expr);
     let rendered = match expr {
         IRExpr::BinOp { kind, lhs, rhs } => {
@@ -72,24 +171,31 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
             match operator {
                 Some(operator) => format!(
                     "{} {operator} {}",
-                    expression(lhs, own_precedence),
-                    expression(rhs, own_precedence + 1)
+                    expression(lhs, own_precedence, types),
+                    expression(rhs, own_precedence + 1, types)
                 ),
-                None => format!("unsignedLt({}, {})", expression(lhs, 0), expression(rhs, 0)),
+                None => format!(
+                    "unsignedLt({}, {})",
+                    expression(lhs, 0, types),
+                    expression(rhs, 0, types)
+                ),
             }
         }
-        IRExpr::Deref(address) => format!("*({})", expression(address, 0)),
-        IRExpr::CastUnknownPtr { address, .. } => {
-            format!("(Unknown*)({})", expression(address, 0))
+        IRExpr::Deref(address) => format!("*({})", expression(address, 0, types)),
+        IRExpr::MemoryAddress { address, .. } => {
+            format!("(Unknown*)({})", expression(address, 0, types))
         }
         IRExpr::Argument(ordinal) => format!("arg{ordinal}"),
         IRExpr::ExtractBytes {
             value,
             offset,
             size,
-        } => format!("extractBytes<{offset}, {size}>({})", expression(value, 0)),
+        } => format!(
+            "extractBytes<{offset}, {size}>({})",
+            expression(value, 0, types)
+        ),
         IRExpr::ZeroExtend { value, size } => {
-            format!("zeroExtend<{size}>({})", expression(value, 0))
+            format!("zeroExtend<{size}>({})", expression(value, 0, types))
         }
         IRExpr::ReplaceBytes {
             original,
@@ -98,15 +204,15 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
             size,
         } => format!(
             "replaceBytes<{offset}, {size}>({}, {})",
-            expression(original, 0),
-            expression(value, 0)
+            expression(original, 0, types),
+            expression(value, 0, types)
         ),
         IRExpr::CU8(value) => format!("0x{value:x}"),
         IRExpr::CU32(value) => format!("0x{value:x}"),
         IRExpr::CU64(value) => format!("0x{value:x}"),
         IRExpr::Variable(variable) => variable_name(*variable),
         IRExpr::Bool(value) => value.to_string(),
-        IRExpr::Not(inner) => format!("!{}", expression(inner, own_precedence)),
+        IRExpr::Not(inner) => format!("!{}", expression(inner, own_precedence, types)),
     };
     if own_precedence < parent_precedence {
         format!("({rendered})")
@@ -115,20 +221,20 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
     }
 }
 
-fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
+fn instruction(output: &mut String, instr: &IRInst, indent: usize, types: &RenderTypes) {
     let padding = "    ".repeat(indent);
     match instr {
         IRInst::Assign { dest, src } => {
             writeln!(
                 output,
                 "{padding}{} = {};",
-                expression(dest, 0),
-                expression(src, 0)
+                expression(dest, 0, types),
+                expression(src, 0, types)
             )
             .unwrap();
         }
         IRInst::Return(Some(value)) => {
-            writeln!(output, "{padding}return {};", expression(value, 0)).unwrap();
+            writeln!(output, "{padding}return {};", expression(value, 0, types)).unwrap();
         }
         IRInst::Return(None) => {
             writeln!(output, "{padding}return;").unwrap();
@@ -142,7 +248,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
                 output,
                 "{padding}{} = {};",
                 variable_name(*variable),
-                expression(value, 0)
+                expression(value, 0, types)
             )
             .unwrap();
         }
@@ -151,7 +257,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
                 output,
                 "{padding}{} = *({});",
                 variable_name(*variable),
-                expression(address, 0)
+                expression(address, 0, types)
             )
             .unwrap();
         }
@@ -159,7 +265,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
             writeln!(
                 output,
                 "{padding}*({}) = {};",
-                expression(address, 0),
+                expression(address, 0, types),
                 variable_name(*variable)
             )
             .unwrap();
@@ -169,14 +275,19 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
             then_branch,
             else_branch,
         } => {
-            writeln!(output, "{padding}if ({}) {{", expression(condition, 0)).unwrap();
+            writeln!(
+                output,
+                "{padding}if ({}) {{",
+                expression(condition, 0, types)
+            )
+            .unwrap();
             for instr in then_branch {
-                instruction(output, instr, indent + 1);
+                instruction(output, instr, indent + 1, types);
             }
             if !else_branch.is_empty() {
                 writeln!(output, "{padding}}} else {{").unwrap();
                 for instr in else_branch {
-                    instruction(output, instr, indent + 1);
+                    instruction(output, instr, indent + 1, types);
                 }
             }
             writeln!(output, "{padding}}}").unwrap();
@@ -199,7 +310,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
                     writeln!(
                         output,
                         "{padding}{label}while ({}) {{",
-                        expression(check, 0)
+                        expression(check, 0, types)
                     )
                     .unwrap();
                 }
@@ -214,7 +325,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
                     writeln!(output, "{nested_padding}// 0x{offset:x}").unwrap();
                     previous_offset = Some(*offset);
                 }
-                instruction(output, instr, indent + 1);
+                instruction(output, instr, indent + 1, types);
             }
             match condition {
                 LoopCondition::Before { .. } => writeln!(output, "{padding}}}").unwrap(),
@@ -225,7 +336,12 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
                     if previous_offset != Some(*offset) {
                         writeln!(output, "{nested_padding}// 0x{offset:x}").unwrap();
                     }
-                    writeln!(output, "{padding}}} while ({});", expression(check, 0)).unwrap();
+                    writeln!(
+                        output,
+                        "{padding}}} while ({});",
+                        expression(check, 0, types)
+                    )
+                    .unwrap();
                 }
             }
         }
@@ -244,7 +360,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
         } => {
             let arguments = arguments
                 .iter()
-                .map(|argument| expression(argument, 0))
+                .map(|argument| expression(argument, 0, types))
                 .collect::<Vec<_>>()
                 .join(", ");
             writeln!(
@@ -255,7 +371,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
             .unwrap();
         }
         IRInst::Jump(target) => {
-            writeln!(output, "{padding}jump({});", expression(target, 0)).unwrap();
+            writeln!(output, "{padding}jump({});", expression(target, 0, types)).unwrap();
         }
         IRInst::End => {
             writeln!(output, "{padding}end();").unwrap();
@@ -272,6 +388,7 @@ pub fn render(program: &Program) -> String {
     }
 
     for (index, function) in program.functions.iter().enumerate() {
+        let types = RenderTypes::from_function(function);
         let id = SyntheticFunctionId { id: index };
         let parameters = function
             .parameters
@@ -299,7 +416,7 @@ pub fn render(program: &Program) -> String {
                 writeln!(output, "    // 0x{offset:x}").unwrap();
                 previous_offset = Some(*offset);
             }
-            instruction(&mut output, instr, 1);
+            instruction(&mut output, instr, 1, &types);
         }
         writeln!(output, "}}").unwrap();
     }
