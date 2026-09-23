@@ -118,10 +118,7 @@ fn rewrite_expression(
                 *expr = IRExpr::Variable(*variable);
             }
         }
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => {
+        IRExpr::BinOp { lhs, rhs, .. } => {
             rewrite_expression(lhs, aliases, native_states);
             rewrite_expression(rhs, aliases, native_states);
         }
@@ -346,10 +343,7 @@ fn max_variable_id(function: &SyntheticFunction) -> Option<usize> {
     fn expression_max(expr: &IRExpr, maximum: &mut Option<usize>) {
         match expr {
             IRExpr::Variable(variable) => include(maximum, variable.id),
-            IRExpr::BinOp { lhs, rhs, .. }
-            | IRExpr::Eq(lhs, rhs)
-            | IRExpr::UnsignedLt(lhs, rhs)
-            | IRExpr::Or(lhs, rhs) => {
+            IRExpr::BinOp { lhs, rhs, .. } => {
                 expression_max(lhs, maximum);
                 expression_max(rhs, maximum);
             }

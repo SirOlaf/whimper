@@ -28,16 +28,26 @@ fn flags(flags: &std::collections::HashSet<NativeFlag>) -> String {
 // used below, so an expression keeps its IR grouping when printed.
 fn precedence(expr: &IRExpr) -> u8 {
     match expr {
-        IRExpr::Or(..) => 1,
+        IRExpr::BinOp {
+            kind: IRBinOpKind::Or,
+            ..
+        } => 1,
         IRExpr::BinOp {
             kind: IRBinOpKind::And,
             ..
         } => 2,
-        IRExpr::Eq(..) => 3,
+        IRExpr::BinOp {
+            kind: IRBinOpKind::Eq,
+            ..
+        } => 3,
         IRExpr::BinOp {
             kind: IRBinOpKind::Shl,
             ..
         } => 4,
+        IRExpr::BinOp {
+            kind: IRBinOpKind::UnsignedLt,
+            ..
+        } => 7,
         IRExpr::BinOp { .. } => 5,
         IRExpr::Not(..) => 6,
         _ => 7,
@@ -49,16 +59,22 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
     let rendered = match expr {
         IRExpr::BinOp { kind, lhs, rhs } => {
             let operator = match kind {
-                IRBinOpKind::Add => "+",
-                IRBinOpKind::Sub => "-",
-                IRBinOpKind::Shl => "<<",
-                IRBinOpKind::And => "&",
+                IRBinOpKind::Add => Some("+"),
+                IRBinOpKind::Sub => Some("-"),
+                IRBinOpKind::Shl => Some("<<"),
+                IRBinOpKind::And => Some("&"),
+                IRBinOpKind::Or => Some("||"),
+                IRBinOpKind::Eq => Some("==="),
+                IRBinOpKind::UnsignedLt => None,
             };
-            format!(
-                "{} {operator} {}",
-                expression(lhs, own_precedence),
-                expression(rhs, own_precedence + 1)
-            )
+            match operator {
+                Some(operator) => format!(
+                    "{} {operator} {}",
+                    expression(lhs, own_precedence),
+                    expression(rhs, own_precedence + 1)
+                ),
+                None => format!("unsignedLt({}, {})", expression(lhs, 0), expression(rhs, 0)),
+            }
         }
         IRExpr::Deref(address) => format!("memory[{}]", expression(address, 0)),
         IRExpr::Reg(reg) => format!("{reg:?}"),
@@ -68,19 +84,6 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
         IRExpr::CU64(value) => format!("0x{value:x}"),
         IRExpr::Variable(variable) => variable_name(*variable),
         IRExpr::Bool(value) => value.to_string(),
-        IRExpr::Eq(lhs, rhs) => format!(
-            "{} === {}",
-            expression(lhs, own_precedence),
-            expression(rhs, own_precedence + 1)
-        ),
-        IRExpr::UnsignedLt(lhs, rhs) => {
-            format!("unsignedLt({}, {})", expression(lhs, 0), expression(rhs, 0))
-        }
-        IRExpr::Or(lhs, rhs) => format!(
-            "{} || {}",
-            expression(lhs, own_precedence),
-            expression(rhs, own_precedence + 1)
-        ),
         IRExpr::Not(inner) => format!("!{}", expression(inner, own_precedence)),
     };
     if own_precedence < parent_precedence {

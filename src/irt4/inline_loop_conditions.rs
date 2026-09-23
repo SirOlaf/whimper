@@ -17,10 +17,7 @@ struct Usage {
 fn visit_expression(expr: &IRExpr, visit: &mut impl FnMut(VariableId)) {
     match expr {
         IRExpr::Variable(variable) => visit(*variable),
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => {
+        IRExpr::BinOp { lhs, rhs, .. } => {
             visit_expression(lhs, visit);
             visit_expression(rhs, visit);
         }
@@ -147,10 +144,7 @@ fn reads_variable(expr: &IRExpr, variable: VariableId) -> bool {
 fn effect_free(expr: &IRExpr) -> bool {
     match expr {
         IRExpr::Deref(_) => false,
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => effect_free(lhs) && effect_free(rhs),
+        IRExpr::BinOp { lhs, rhs, .. } => effect_free(lhs) && effect_free(rhs),
         IRExpr::ReplaceBytes {
             original, value, ..
         } => effect_free(original) && effect_free(value),

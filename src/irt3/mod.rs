@@ -50,6 +50,9 @@ fn bin_op(kind: &t2::IRBinOpKind) -> IRBinOpKind {
         t2::IRBinOpKind::Sub => IRBinOpKind::Sub,
         t2::IRBinOpKind::Shl => IRBinOpKind::Shl,
         t2::IRBinOpKind::And => IRBinOpKind::And,
+        t2::IRBinOpKind::Or => IRBinOpKind::Or,
+        t2::IRBinOpKind::Eq => IRBinOpKind::Eq,
+        t2::IRBinOpKind::UnsignedLt => IRBinOpKind::UnsignedLt,
     }
 }
 
@@ -95,15 +98,6 @@ fn expression(expr: &t2::IRExpr) -> IRExpr {
         t2::IRExpr::CU64(value) => IRExpr::CU64(*value),
         t2::IRExpr::Variable(variable) => IRExpr::Variable(variable_id(*variable)),
         t2::IRExpr::Bool(value) => IRExpr::Bool(*value),
-        t2::IRExpr::Eq(lhs, rhs) => {
-            IRExpr::Eq(Box::new(expression(lhs)), Box::new(expression(rhs)))
-        }
-        t2::IRExpr::UnsignedLt(lhs, rhs) => {
-            IRExpr::UnsignedLt(Box::new(expression(lhs)), Box::new(expression(rhs)))
-        }
-        t2::IRExpr::Or(lhs, rhs) => {
-            IRExpr::Or(Box::new(expression(lhs)), Box::new(expression(rhs)))
-        }
         t2::IRExpr::Not(inner) => IRExpr::Not(Box::new(expression(inner))),
     }
 }

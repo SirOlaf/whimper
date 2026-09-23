@@ -75,7 +75,11 @@ fn offset(expr: &IRExpr) -> Option<Offset> {
                 value.displacement = value.displacement.checked_sub(constant(rhs)?)?;
                 Some(value)
             }
-            IRBinOpKind::Shl | IRBinOpKind::And => None,
+            IRBinOpKind::Shl
+            | IRBinOpKind::And
+            | IRBinOpKind::Or
+            | IRBinOpKind::Eq
+            | IRBinOpKind::UnsignedLt => None,
         },
         _ => None,
     }
@@ -87,10 +91,7 @@ fn reads(expr: &IRExpr, result: &mut HashSet<Offset>) {
         return;
     }
     match expr {
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => {
+        IRExpr::BinOp { lhs, rhs, .. } => {
             reads(lhs, result);
             reads(rhs, result);
         }

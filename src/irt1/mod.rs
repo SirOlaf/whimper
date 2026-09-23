@@ -33,34 +33,18 @@ fn lift_flag(flag: IRT0Flag) -> NativeFlag {
 
 fn lift_expr(expr: IRT0Expr) -> IRExpr {
     match expr {
-        IRT0Expr::BinOp { kind, lhs, rhs } => {
-            let lhs = Box::new(lift_expr(*lhs));
-            let rhs = Box::new(lift_expr(*rhs));
-            match kind {
-                IRT0BinOpKind::Add => IRExpr::BinOp {
-                    kind: IRBinOpKind::Add,
-                    lhs,
-                    rhs,
-                },
-                IRT0BinOpKind::Sub => IRExpr::BinOp {
-                    kind: IRBinOpKind::Sub,
-                    lhs,
-                    rhs,
-                },
-                IRT0BinOpKind::Shl => IRExpr::BinOp {
-                    kind: IRBinOpKind::Shl,
-                    lhs,
-                    rhs,
-                },
-                IRT0BinOpKind::And => IRExpr::BinOp {
-                    kind: IRBinOpKind::And,
-                    lhs,
-                    rhs,
-                },
-                IRT0BinOpKind::Or => IRExpr::Or(lhs, rhs),
-                IRT0BinOpKind::Eq => IRExpr::Eq(lhs, rhs),
-            }
-        }
+        IRT0Expr::BinOp { kind, lhs, rhs } => IRExpr::BinOp {
+            kind: match kind {
+                IRT0BinOpKind::Add => IRBinOpKind::Add,
+                IRT0BinOpKind::Sub => IRBinOpKind::Sub,
+                IRT0BinOpKind::Shl => IRBinOpKind::Shl,
+                IRT0BinOpKind::And => IRBinOpKind::And,
+                IRT0BinOpKind::Or => IRBinOpKind::Or,
+                IRT0BinOpKind::Eq => IRBinOpKind::Eq,
+            },
+            lhs: Box::new(lift_expr(*lhs)),
+            rhs: Box::new(lift_expr(*rhs)),
+        },
         IRT0Expr::Deref(inner) => IRExpr::Deref(Box::new(lift_expr(*inner))),
         IRT0Expr::Reg(reg) => IRExpr::Reg(reg),
         IRT0Expr::Flag(flag) => IRExpr::Flag(lift_flag(flag)),
@@ -225,10 +209,7 @@ impl SyntheticFunctionBuilder<'_> {
 fn condition_flags(expr: &IRExpr, flags: &mut Vec<NativeFlag>) {
     match expr {
         IRExpr::Flag(flag) if !flags.contains(flag) => flags.push(flag.clone()),
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => {
+        IRExpr::BinOp { lhs, rhs, .. } => {
             condition_flags(lhs, flags);
             condition_flags(rhs, flags);
         }
@@ -249,19 +230,29 @@ fn flag_test(flag: &NativeFlag, expected: u8, slots: &HashMap<NativeFlag, Variab
 fn lift_condition(expr: IRExpr, slots: &HashMap<NativeFlag, VariableId>) -> IRExpr {
     match expr {
         IRExpr::Flag(flag) => IRExpr::Variable(slots[&flag]),
-        IRExpr::Eq(lhs, rhs) => match (*lhs, *rhs) {
+        IRExpr::BinOp {
+            kind: IRBinOpKind::Eq,
+            lhs,
+            rhs,
+        } => match (*lhs, *rhs) {
             (IRExpr::Flag(flag), IRExpr::CU8(value)) | (IRExpr::CU8(value), IRExpr::Flag(flag)) => {
                 flag_test(&flag, value, slots)
             }
-            (lhs, rhs) => IRExpr::Eq(
-                Box::new(lift_condition(lhs, slots)),
-                Box::new(lift_condition(rhs, slots)),
-            ),
+            (lhs, rhs) => IRExpr::BinOp {
+                kind: IRBinOpKind::Eq,
+                lhs: Box::new(lift_condition(lhs, slots)),
+                rhs: Box::new(lift_condition(rhs, slots)),
+            },
         },
-        IRExpr::Or(lhs, rhs) => IRExpr::Or(
-            Box::new(lift_condition(*lhs, slots)),
-            Box::new(lift_condition(*rhs, slots)),
-        ),
+        IRExpr::BinOp {
+            kind: IRBinOpKind::Or,
+            lhs,
+            rhs,
+        } => IRExpr::BinOp {
+            kind: IRBinOpKind::Or,
+            lhs: Box::new(lift_condition(*lhs, slots)),
+            rhs: Box::new(lift_condition(*rhs, slots)),
+        },
         expr => {
             let mut flags = Vec::new();
             condition_flags(&expr, &mut flags);
@@ -273,7 +264,11 @@ fn lift_condition(expr: IRExpr, slots: &HashMap<NativeFlag, VariableId>) -> IREx
 
 fn flag_value(flag: &NativeFlag, expr: &IRExpr) -> IRExpr {
     match (flag, expr) {
-        (NativeFlag::Zero, _) => IRExpr::Eq(Box::new(expr.clone()), Box::new(IRExpr::CU8(0))),
+        (NativeFlag::Zero, _) => IRExpr::BinOp {
+            kind: IRBinOpKind::Eq,
+            lhs: Box::new(expr.clone()),
+            rhs: Box::new(IRExpr::CU8(0)),
+        },
         (
             NativeFlag::Carry,
             IRExpr::BinOp {
@@ -281,7 +276,11 @@ fn flag_value(flag: &NativeFlag, expr: &IRExpr) -> IRExpr {
                 lhs,
                 rhs,
             },
-        ) => IRExpr::UnsignedLt(Box::new((**lhs).clone()), Box::new((**rhs).clone())),
+        ) => IRExpr::BinOp {
+            kind: IRBinOpKind::UnsignedLt,
+            lhs: Box::new((**lhs).clone()),
+            rhs: Box::new((**rhs).clone()),
+        },
         (
             NativeFlag::Carry,
             IRExpr::BinOp {
@@ -289,7 +288,11 @@ fn flag_value(flag: &NativeFlag, expr: &IRExpr) -> IRExpr {
                 lhs,
                 ..
             },
-        ) => IRExpr::UnsignedLt(Box::new(expr.clone()), Box::new((**lhs).clone())),
+        ) => IRExpr::BinOp {
+            kind: IRBinOpKind::UnsignedLt,
+            lhs: Box::new(expr.clone()),
+            rhs: Box::new((**lhs).clone()),
+        },
         _ => unimplemented!("cannot express {flag:?} from {expr:?} as a boolean expression"),
     }
 }

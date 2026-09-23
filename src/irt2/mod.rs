@@ -18,6 +18,9 @@ fn lift_bin_op(kind: &t1::IRBinOpKind) -> IRBinOpKind {
         t1::IRBinOpKind::Sub => IRBinOpKind::Sub,
         t1::IRBinOpKind::Shl => IRBinOpKind::Shl,
         t1::IRBinOpKind::And => IRBinOpKind::And,
+        t1::IRBinOpKind::Or => IRBinOpKind::Or,
+        t1::IRBinOpKind::Eq => IRBinOpKind::Eq,
+        t1::IRBinOpKind::UnsignedLt => IRBinOpKind::UnsignedLt,
     }
 }
 
@@ -36,10 +39,7 @@ fn is_global_address(address: &t1::IRExpr) -> bool {
 fn source_width(expr: &t1::IRExpr) -> Option<usize> {
     match expr {
         t1::IRExpr::Reg(register) => Some(register.size()),
-        t1::IRExpr::BinOp { lhs, rhs, .. }
-        | t1::IRExpr::Eq(lhs, rhs)
-        | t1::IRExpr::UnsignedLt(lhs, rhs)
-        | t1::IRExpr::Or(lhs, rhs) => source_width(lhs).or_else(|| source_width(rhs)),
+        t1::IRExpr::BinOp { lhs, rhs, .. } => source_width(lhs).or_else(|| source_width(rhs)),
         t1::IRExpr::Not(inner) => source_width(inner),
         t1::IRExpr::Deref(_)
         | t1::IRExpr::CU8(_)
@@ -170,7 +170,15 @@ impl FunctionLifter {
     ) -> IRExpr {
         match expr {
             t1::IRExpr::BinOp { kind, lhs, rhs } => {
-                let width = width.or_else(|| source_width(expr));
+                let width = match kind {
+                    t1::IRBinOpKind::Add
+                    | t1::IRBinOpKind::Sub
+                    | t1::IRBinOpKind::Shl
+                    | t1::IRBinOpKind::And => width.or_else(|| source_width(expr)),
+                    t1::IRBinOpKind::Or | t1::IRBinOpKind::Eq | t1::IRBinOpKind::UnsignedLt => {
+                        width
+                    }
+                };
                 IRExpr::BinOp {
                     kind: lift_bin_op(kind),
                     lhs: Box::new(self.expr(lhs, width, before)),
@@ -198,18 +206,6 @@ impl FunctionLifter {
             t1::IRExpr::CU64(value) => IRExpr::CU64(*value),
             t1::IRExpr::Variable(variable) => IRExpr::Variable(self.source_variables[variable]),
             t1::IRExpr::Bool(value) => IRExpr::Bool(*value),
-            t1::IRExpr::Eq(lhs, rhs) => IRExpr::Eq(
-                Box::new(self.expr(lhs, width, before)),
-                Box::new(self.expr(rhs, width, before)),
-            ),
-            t1::IRExpr::UnsignedLt(lhs, rhs) => IRExpr::UnsignedLt(
-                Box::new(self.expr(lhs, width, before)),
-                Box::new(self.expr(rhs, width, before)),
-            ),
-            t1::IRExpr::Or(lhs, rhs) => IRExpr::Or(
-                Box::new(self.expr(lhs, width, before)),
-                Box::new(self.expr(rhs, width, before)),
-            ),
             t1::IRExpr::Not(inner) => IRExpr::Not(Box::new(self.expr(inner, width, before))),
             _ => panic!("tier 1 produced an unsupported expression: {expr:?}"),
         }

@@ -192,10 +192,7 @@ fn candidate(function: &SyntheticFunction, flow: &Flow) -> Option<(VariableId, I
 fn replace_expression(expr: &mut IRExpr, target: VariableId, value: &IRExpr) {
     match expr {
         IRExpr::Variable(variable) if *variable == target => *expr = value.clone(),
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => {
+        IRExpr::BinOp { lhs, rhs, .. } => {
             replace_expression(lhs, target, value);
             replace_expression(rhs, target, value);
         }
@@ -325,10 +322,7 @@ fn retain(body: &mut Vec<IRInst>, target: VariableId) {
 fn effect_free(expr: &IRExpr) -> bool {
     match expr {
         IRExpr::Deref(_) => false,
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => effect_free(lhs) && effect_free(rhs),
+        IRExpr::BinOp { lhs, rhs, .. } => effect_free(lhs) && effect_free(rhs),
         IRExpr::ReplaceBytes {
             original, value, ..
         } => effect_free(original) && effect_free(value),

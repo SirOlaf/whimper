@@ -51,10 +51,7 @@ fn read_expr(
                 required,
             );
         }
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => {
+        IRExpr::BinOp { lhs, rhs, .. } => {
             read_expr(lhs, defined, required);
             read_expr(rhs, defined, required);
         }

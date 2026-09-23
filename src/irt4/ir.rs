@@ -60,6 +60,9 @@ pub enum IRBinOpKind {
     Sub,
     Shl,
     And,
+    Or,
+    Eq,
+    UnsignedLt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,9 +99,6 @@ pub enum IRExpr {
     CU64(u64),
     Variable(VariableId),
     Bool(bool),
-    Eq(Box<IRExpr>, Box<IRExpr>),
-    UnsignedLt(Box<IRExpr>, Box<IRExpr>),
-    Or(Box<IRExpr>, Box<IRExpr>),
     Not(Box<IRExpr>),
 }
 

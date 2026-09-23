@@ -27,10 +27,7 @@ struct Writes {
 fn expression_accesses(expr: &IRExpr, accesses: &mut Vec<Access>) {
     match expr {
         IRExpr::Variable(variable) => accesses.push(Access::Read(*variable)),
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => {
+        IRExpr::BinOp { lhs, rhs, .. } => {
             expression_accesses(lhs, accesses);
             expression_accesses(rhs, accesses);
         }
@@ -121,10 +118,7 @@ fn input_reads(expr: &IRExpr, variables: &mut HashSet<VariableId>, memory: &mut 
             *memory = true;
             input_reads(address, variables, memory);
         }
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => {
+        IRExpr::BinOp { lhs, rhs, .. } => {
             input_reads(lhs, variables, memory);
             input_reads(rhs, variables, memory);
         }
@@ -254,10 +248,7 @@ fn replace_expression(expr: &mut IRExpr, variable: VariableId, value: &IRExpr) -
             *expr = value.clone();
             true
         }
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => {
+        IRExpr::BinOp { lhs, rhs, .. } => {
             replace_expression(lhs, variable, value) | replace_expression(rhs, variable, value)
         }
         IRExpr::ReplaceBytes {

@@ -7,10 +7,7 @@ fn read_expr(expr: &IRExpr, live: &mut HashSet<NativeFlag>) {
         IRExpr::Flag(flag) => {
             live.insert(flag.clone());
         }
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => {
+        IRExpr::BinOp { lhs, rhs, .. } => {
             read_expr(lhs, live);
             read_expr(rhs, live);
         }
@@ -117,10 +114,7 @@ fn require_lowered_expr(expr: &IRExpr, function: usize, offset: usize) {
         IRExpr::Flag(flag) => {
             panic!("tier 1 left {flag:?} in fn_{function} at 0x{offset:x}; lower it before tier 2")
         }
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => {
+        IRExpr::BinOp { lhs, rhs, .. } => {
             require_lowered_expr(lhs, function, offset);
             require_lowered_expr(rhs, function, offset);
         }

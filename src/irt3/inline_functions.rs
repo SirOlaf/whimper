@@ -180,10 +180,7 @@ impl Slots {
 
 fn visit_expression(expr: &mut IRExpr, visit: &mut impl FnMut(&mut IRExpr)) {
     match expr {
-        IRExpr::BinOp { lhs, rhs, .. }
-        | IRExpr::Eq(lhs, rhs)
-        | IRExpr::UnsignedLt(lhs, rhs)
-        | IRExpr::Or(lhs, rhs) => {
+        IRExpr::BinOp { lhs, rhs, .. } => {
             visit_expression(lhs, visit);
             visit_expression(rhs, visit);
         }
