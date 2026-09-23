@@ -57,6 +57,7 @@ fn bin_op(kind: &t3::IRBinOpKind) -> IRBinOpKind {
         t3::IRBinOpKind::And => IRBinOpKind::And,
         t3::IRBinOpKind::Or => IRBinOpKind::Or,
         t3::IRBinOpKind::Eq => IRBinOpKind::Eq,
+        t3::IRBinOpKind::SignedGt => IRBinOpKind::SignedGt,
         t3::IRBinOpKind::UnsignedLt => IRBinOpKind::UnsignedLt,
     }
 }

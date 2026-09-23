@@ -361,8 +361,14 @@ impl Analysis {
         match expr {
             IRExpr::BinOp { kind, lhs, rhs } => {
                 match kind {
-                    IRBinOpKind::Shl | IRBinOpKind::UnsignedLt | IRBinOpKind::UnsignedGe => {
-                        let unsigned = *kind != IRBinOpKind::Shl;
+                    IRBinOpKind::Shl
+                    | IRBinOpKind::SignedGt
+                    | IRBinOpKind::UnsignedLt
+                    | IRBinOpKind::UnsignedGe => {
+                        let unsigned = matches!(
+                            kind,
+                            IRBinOpKind::UnsignedLt | IRBinOpKind::UnsignedGe
+                        );
                         for operand in [lhs.as_ref(), rhs.as_ref()] {
                             if let Some(slot) = direct_slot(operand, owner) {
                                 self.integer(slot, unsigned);

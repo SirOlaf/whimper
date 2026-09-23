@@ -64,6 +64,7 @@ fn bin_op(kind: &t4::IRBinOpKind) -> IRBinOpKind {
         t4::IRBinOpKind::And => IRBinOpKind::And,
         t4::IRBinOpKind::Or => IRBinOpKind::Or,
         t4::IRBinOpKind::Eq => IRBinOpKind::Eq,
+        t4::IRBinOpKind::SignedGt => IRBinOpKind::SignedGt,
         t4::IRBinOpKind::Ne => IRBinOpKind::Ne,
         t4::IRBinOpKind::UnsignedLt => IRBinOpKind::UnsignedLt,
         t4::IRBinOpKind::UnsignedGe => IRBinOpKind::UnsignedGe,

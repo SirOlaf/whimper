@@ -58,6 +58,7 @@ pub enum IRBinOpKind {
     And,
     Or,
     Eq,
+    SignedGt,
     UnsignedLt,
 }
 

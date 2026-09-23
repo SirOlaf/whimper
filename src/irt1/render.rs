@@ -45,7 +45,7 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 4,
         IRExpr::BinOp {
-            kind: IRBinOpKind::UnsignedLt,
+            kind: IRBinOpKind::UnsignedLt | IRBinOpKind::SignedGt,
             ..
         } => 7,
         IRExpr::BinOp { .. } => 5,
@@ -65,6 +65,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
                 IRBinOpKind::And => Some("&"),
                 IRBinOpKind::Or => Some("||"),
                 IRBinOpKind::Eq => Some("==="),
+                IRBinOpKind::SignedGt => Some(">"),
                 IRBinOpKind::UnsignedLt => None,
             };
             match operator {

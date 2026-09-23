@@ -30,6 +30,7 @@ pub enum IRBinOpKind {
     Or,
 
     Eq,
+    SignedGt,
 }
 
 #[derive(Debug, Clone)]
@@ -222,7 +223,7 @@ fn lift_cond(x: Instruction) -> Vec<IRInst> {
             res
         }
         Mnemonic::Cmp => match x.code() {
-            Code::Cmp_r32_rm32 => {
+            Code::Cmp_r32_rm32 | Code::Cmp_rm32_r32 => {
                 let sub_expr = IRExpr::BinOp {
                     kind: IRBinOpKind::Sub,
                     lhs: Box::new(lift_op(x, 0)),
@@ -230,7 +231,7 @@ fn lift_cond(x: Instruction) -> Vec<IRInst> {
                 };
                 vec![IRInst::SetFlagsFrom(
                     HashSet::from([
-                        NativeFlag::Carry,
+                        NativeFlag::Overflow,
                         NativeFlag::Sign,
                         NativeFlag::Zero,
                         NativeFlag::AuxCarry,
@@ -248,8 +249,19 @@ fn lift_cond(x: Instruction) -> Vec<IRInst> {
     }
 }
 
-fn lift_jmp(x: Instruction) -> Vec<IRInst> {
+fn lift_jmp(x: Instruction, signed_compare: Option<(IRExpr, IRExpr)>) -> Vec<IRInst> {
     match x.code() {
+        Code::Jg_rel8_64 | Code::Jg_rel32_64 => {
+            let (lhs, rhs) = signed_compare.expect("JG must follow a supported compare");
+            vec![IRInst::If(
+                IRExpr::BinOp {
+                    kind: IRBinOpKind::SignedGt,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                Box::new(IRInst::Jmp(lift_op(x, 0))),
+            )]
+        }
         Code::Je_rel8_64 => {
             vec![IRInst::If(
                 IRExpr::BinOp {
@@ -323,6 +335,27 @@ fn lift_shl(x: Instruction) -> Vec<IRInst> {
     }
 }
 
+fn lift_xor(x: Instruction) -> Vec<IRInst> {
+    let same_register = x.op_kind(0) == OpKind::Register
+        && x.op_kind(1) == OpKind::Register
+        && x.op_register(0) == x.op_register(1);
+    if !same_register || !matches!(x.code(), Code::Xor_r32_rm32 | Code::Xor_rm32_r32) {
+        panic!("unsupported XOR: {x:?}");
+    }
+
+    vec![
+        IRInst::ClearFlags(HashSet::from([NativeFlag::Carry, NativeFlag::Overflow])),
+        IRInst::SetFlagsFrom(
+            HashSet::from([NativeFlag::Sign, NativeFlag::Zero, NativeFlag::Parity]),
+            IRExpr::CU32(0),
+        ),
+        IRInst::Asgn {
+            dest: lift_op(x, 0),
+            src: IRExpr::CU32(0),
+        },
+    ]
+}
+
 fn lift_ret(x: Instruction) -> Vec<IRInst> {
     match x.code() {
         Code::Retnq => {
@@ -343,18 +376,25 @@ pub fn lift_to_irt0(code: &[u8], base_offset: usize) -> Program {
     let mut instruction = Instruction::default();
 
     let mut res: Program = vec![];
+    let mut last_compare = None;
     while decoder.can_decode() {
         decoder.decode_out(&mut instruction);
 
+        let compare_for_jump = if instruction.mnemonic() == Mnemonic::Jg {
+            last_compare.clone()
+        } else {
+            None
+        };
         let tmp_instr = match instruction.mnemonic() {
             Mnemonic::Mov => Some(lift_mov(instruction)),
             Mnemonic::Add => Some(lift_add(instruction)),
             Mnemonic::Sub => Some(lift_sub(instruction)),
             Mnemonic::Test | Mnemonic::Cmp => Some(lift_cond(instruction)),
-            Mnemonic::Je | Mnemonic::Jb | Mnemonic::Jae | Mnemonic::Jbe => {
-                Some(lift_jmp(instruction))
+            Mnemonic::Je | Mnemonic::Jb | Mnemonic::Jae | Mnemonic::Jbe | Mnemonic::Jg => {
+                Some(lift_jmp(instruction, compare_for_jump))
             }
             Mnemonic::Shl => Some(lift_shl(instruction)),
+            Mnemonic::Xor => Some(lift_xor(instruction)),
             Mnemonic::Ret => Some(lift_ret(instruction)),
             Mnemonic::Nop => None,
             _ => {
@@ -369,6 +409,9 @@ pub fn lift_to_irt0(code: &[u8], base_offset: usize) -> Program {
                     .map(|x| (instruction.ip().try_into().unwrap(), x.clone())),
             );
         }
+
+        last_compare = (instruction.mnemonic() == Mnemonic::Cmp)
+            .then(|| (lift_op(instruction, 0), lift_op(instruction, 1)));
     }
 
     res

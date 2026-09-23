@@ -20,6 +20,7 @@ fn lift_bin_op(kind: &t1::IRBinOpKind) -> IRBinOpKind {
         t1::IRBinOpKind::And => IRBinOpKind::And,
         t1::IRBinOpKind::Or => IRBinOpKind::Or,
         t1::IRBinOpKind::Eq => IRBinOpKind::Eq,
+        t1::IRBinOpKind::SignedGt => IRBinOpKind::SignedGt,
         t1::IRBinOpKind::UnsignedLt => IRBinOpKind::UnsignedLt,
     }
 }
@@ -175,7 +176,10 @@ impl FunctionLifter {
                     | t1::IRBinOpKind::Sub
                     | t1::IRBinOpKind::Shl
                     | t1::IRBinOpKind::And => width.or_else(|| source_width(expr)),
-                    t1::IRBinOpKind::Or | t1::IRBinOpKind::Eq | t1::IRBinOpKind::UnsignedLt => {
+                    t1::IRBinOpKind::Or
+                    | t1::IRBinOpKind::Eq
+                    | t1::IRBinOpKind::SignedGt
+                    | t1::IRBinOpKind::UnsignedLt => {
                         width
                     }
                 };

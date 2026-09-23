@@ -41,6 +41,7 @@ fn lift_expr(expr: IRT0Expr) -> IRExpr {
                 IRT0BinOpKind::And => IRBinOpKind::And,
                 IRT0BinOpKind::Or => IRBinOpKind::Or,
                 IRT0BinOpKind::Eq => IRBinOpKind::Eq,
+                IRT0BinOpKind::SignedGt => IRBinOpKind::SignedGt,
             },
             lhs: Box::new(lift_expr(*lhs)),
             rhs: Box::new(lift_expr(*rhs)),

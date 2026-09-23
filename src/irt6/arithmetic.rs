@@ -164,6 +164,7 @@ impl Context {
                     kind,
                     IRBinOpKind::Eq
                         | IRBinOpKind::Ne
+                        | IRBinOpKind::SignedGt
                         | IRBinOpKind::UnsignedLt
                         | IRBinOpKind::UnsignedGe
                 );

@@ -173,7 +173,9 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 3,
         IRExpr::BinOp {
-            kind: IRBinOpKind::UnsignedLt | IRBinOpKind::UnsignedGe,
+            kind: IRBinOpKind::SignedGt
+                | IRBinOpKind::UnsignedLt
+                | IRBinOpKind::UnsignedGe,
             ..
         } => 4,
         IRExpr::BinOp {
@@ -199,6 +201,7 @@ fn binary_operator(kind: &IRBinOpKind) -> &'static str {
         IRBinOpKind::And => "&",
         IRBinOpKind::Or => "||",
         IRBinOpKind::Eq => "===",
+        IRBinOpKind::SignedGt => ">",
         IRBinOpKind::Ne => "!==",
         IRBinOpKind::UnsignedLt => "u<",
         IRBinOpKind::UnsignedGe => "u>=",

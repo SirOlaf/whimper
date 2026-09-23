@@ -172,7 +172,9 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 3,
         IRExpr::BinOp {
-            kind: IRBinOpKind::UnsignedLt | IRBinOpKind::UnsignedGe,
+            kind: IRBinOpKind::SignedGt
+                | IRBinOpKind::UnsignedLt
+                | IRBinOpKind::UnsignedGe,
             ..
         } => 4,
         IRExpr::BinOp {
@@ -202,7 +204,8 @@ fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> Stri
                 IRBinOpKind::Shl => "<<",
                 IRBinOpKind::And => "&",
                 IRBinOpKind::Or => "||",
-                IRBinOpKind::Eq => "===",
+        IRBinOpKind::Eq => "===",
+        IRBinOpKind::SignedGt => ">",
                 IRBinOpKind::Ne => "!==",
                 IRBinOpKind::UnsignedLt => "u<",
                 IRBinOpKind::UnsignedGe => "u>=",
