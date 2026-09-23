@@ -170,6 +170,22 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
             }
             writeln!(output, "{padding}}}").unwrap();
         }
+        IRInst::Loop { entry_offset, body } => {
+            writeln!(output, "{padding}loop {{").unwrap();
+            let nested_padding = "    ".repeat(indent + 1);
+            let mut previous_offset = Some(*entry_offset);
+            for (offset, instr) in body {
+                if previous_offset != Some(*offset) {
+                    writeln!(output, "{nested_padding}// 0x{offset:x}").unwrap();
+                    previous_offset = Some(*offset);
+                }
+                instruction(output, instr, indent + 1);
+            }
+            writeln!(output, "{padding}}}").unwrap();
+        }
+        IRInst::Continue => {
+            writeln!(output, "{padding}continue;").unwrap();
+        }
         IRInst::CallSynthetic {
             function,
             arguments,

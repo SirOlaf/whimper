@@ -1,4 +1,5 @@
-pub mod inline;
+pub mod inline_trivial_loops;
+pub mod inline_variables;
 pub mod ir;
 pub mod render;
 
@@ -150,7 +151,7 @@ fn instruction(instr: &t2::IRInst) -> IRInst {
 }
 
 pub fn lift(source: &t2::Program) -> Program {
-    inline::tr(Program {
+    let program = Program {
         entry: source.entry.map(function_id),
         functions: source
             .functions
@@ -165,5 +166,7 @@ pub fn lift(source: &t2::Program) -> Program {
                     .collect(),
             })
             .collect(),
-    })
+    };
+    let program = inline_trivial_loops::tr(program);
+    inline_variables::tr(program)
 }

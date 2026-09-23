@@ -90,12 +90,17 @@ fn instruction_accesses(instr: &IRInst, accesses: &mut Vec<Access>) {
                 instruction_accesses(instr, accesses);
             }
         }
+        IRInst::Loop { body, .. } => {
+            for (_, instr) in body {
+                instruction_accesses(instr, accesses);
+            }
+        }
         IRInst::CallSynthetic { arguments, .. } => {
             for argument in arguments {
                 expression_accesses(argument, accesses);
             }
         }
-        IRInst::Return(None) | IRInst::DeclareVariable { .. } | IRInst::End => {}
+        IRInst::Return(None) | IRInst::DeclareVariable { .. } | IRInst::Continue | IRInst::End => {}
     }
 }
 
@@ -313,12 +318,21 @@ fn replace_instruction(instr: &mut IRInst, variable: VariableId, value: &IRExpr)
             }
             replaced
         }
+        IRInst::Loop { body, .. } => {
+            let mut replaced = false;
+            for (_, instr) in body {
+                replaced |= replace_instruction(instr, variable, value);
+            }
+            replaced
+        }
         IRInst::CallSynthetic { arguments, .. } => {
             arguments.iter_mut().fold(false, |found, argument| {
                 replace_expression(argument, variable, value) | found
             })
         }
-        IRInst::Return(None) | IRInst::DeclareVariable { .. } | IRInst::End => false,
+        IRInst::Return(None) | IRInst::DeclareVariable { .. } | IRInst::Continue | IRInst::End => {
+            false
+        }
     }
 }
 

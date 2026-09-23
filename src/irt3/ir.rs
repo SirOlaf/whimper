@@ -130,6 +130,16 @@ pub enum IRInst {
         else_branch: Vec<IRInst>,
     },
 
+    /// Repeat the body until it transfers elsewhere or reaches Continue.
+    /// Source offsets are retained for the top-level instructions in the loop.
+    Loop {
+        entry_offset: usize,
+        body: Vec<(usize, IRInst)>,
+    },
+
+    /// Continue at the beginning of the enclosing Loop.
+    Continue,
+
     /// Tail call into a shared synthetic function; the caller does not resume.
     CallSynthetic {
         function: SyntheticFunctionId,
