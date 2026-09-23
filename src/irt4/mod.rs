@@ -4,6 +4,7 @@ pub mod ir;
 mod place_declarations;
 pub mod render;
 mod simplify_binary_operations;
+mod simplify_branches;
 mod variable_flow;
 
 use crate::irt3::ir as t3;
@@ -385,6 +386,7 @@ pub fn lift(source: &t3::Program) -> Program {
     eliminate_aliases::run(&mut program);
     inline_loop_conditions::run(&mut program);
     simplify_binary_operations::run(&mut program);
+    simplify_branches::run(&mut program);
     place_declarations::run(&mut program);
     program
 }

@@ -194,6 +194,10 @@ struct Rule {
 
 const RULES: &[Rule] = &[
     Rule {
+        name: "boolean-branch-to-return",
+        apply: recover_boolean_return,
+    },
+    Rule {
         name: "guarded-do-to-while",
         apply: rotate_guarded_loop,
     },
@@ -210,6 +214,18 @@ const RULES: &[Rule] = &[
         apply: recover_compound_assignment,
     },
 ];
+
+fn recover_boolean_return(
+    instr: &mut IRInst,
+    offset: usize,
+    _context: &Context,
+    _facts: &Facts,
+    _options: &Options,
+) -> Option<usize> {
+    let value = shapes::boolean_return(instr)?;
+    *instr = IRInst::Return(Some(value));
+    Some(offset)
+}
 
 fn eliminate_guarded_modulo(
     instr: &mut IRInst,

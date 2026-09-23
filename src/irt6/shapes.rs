@@ -45,6 +45,42 @@ pub struct GuardedModulo {
     pub replacement: IRInst,
 }
 
+/// Recognize an if whose only actions return zero and one.
+/// The condition is evaluated once in either form, so it need not be repeatable.
+pub fn boolean_return(instr: &IRInst) -> Option<IRExpr> {
+    let IRInst::If {
+        condition,
+        then_branch,
+        else_branch,
+    } = instr
+    else {
+        return None;
+    };
+    let ([IRInst::Return(Some(then_value))], [IRInst::Return(Some(else_value))]) =
+        (&then_branch[..], &else_branch[..])
+    else {
+        return None;
+    };
+    let then_is_true = match (then_value, else_value) {
+        (IRExpr::Bool(true), IRExpr::Bool(false))
+        | (IRExpr::CU8(1), IRExpr::CU8(0))
+        | (IRExpr::CU32(1), IRExpr::CU32(0))
+        | (IRExpr::CU64(1), IRExpr::CU64(0)) => true,
+        (IRExpr::Bool(false), IRExpr::Bool(true))
+        | (IRExpr::CU8(0), IRExpr::CU8(1))
+        | (IRExpr::CU32(0), IRExpr::CU32(1))
+        | (IRExpr::CU64(0), IRExpr::CU64(1)) => false,
+        _ => return None,
+    };
+    Some(if then_is_true {
+        // An if can test a non-boolean value. Normalize its truthiness before
+        // returning it, so a true condition such as 2 still returns 1.
+        IRExpr::Not(Box::new(IRExpr::Not(Box::new(condition.clone()))))
+    } else {
+        IRExpr::Not(Box::new(condition.clone()))
+    })
+}
+
 /// Recognize a sole modulo assignment under `dividend u>= stride` (or the
 /// opposite branch of `dividend u< stride`). The caller proves that skipping
 /// the assignment leaves its destination equal to the dividend.

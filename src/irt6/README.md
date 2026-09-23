@@ -81,6 +81,11 @@ operators and renders the replacement as `a op= b`. It also recognizes
 `a = b + a` and `a = b & a` for variable destinations. Memory destinations
 match only the left operand and require a repeatable address expression.
 
+The boolean-return rule replaces an `if` whose two branches only return zero
+and one with a return of the condition's boolean value or its negation. The
+constants must have the same width. The condition is still evaluated once,
+including any memory reads it performs.
+
 Branch facts identify known zero strides. Writes invalidate dependent facts;
 only invariant facts enter loop bodies. A known zero stride prevents recovery.
 Otherwise, the rule assumes a nonzero stride on terminating executions: a zero
