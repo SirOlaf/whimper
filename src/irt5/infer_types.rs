@@ -1,17 +1,25 @@
-//! Infer integer and pointer slots only from operations with decisive shapes.
+//! Infer integer, pointer, and struct slots from decisive access shapes.
 //! Copies and synthetic calls carry that evidence across slots of equal width.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::ir::{
-    IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, SyntheticFunctionId,
-    VariableId, VariableType,
+    IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, StructField,
+    SyntheticFunctionId, VariableId, VariableType, field_address,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Slot {
     Variable(VariableId),
     Argument(SyntheticFunctionId, usize),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct FieldLink {
+    value: Slot,
+    base: Slot,
+    offset: usize,
+    size: Option<usize>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -39,17 +47,73 @@ impl PointeeEvidence {
             self.candidate = None;
             self.conflicting = true;
         } else if let Some(candidate) = &other.candidate {
-            if self
-                .candidate
-                .as_ref()
-                .is_some_and(|current| current != candidate)
-            {
-                self.candidate = None;
-                self.conflicting = true;
-            } else {
-                self.candidate = Some(candidate.clone());
+            match self.candidate.as_ref() {
+                Some(VariableType::UnknownPointer)
+                    if matches!(candidate, VariableType::Pointer(_)) =>
+                {
+                    self.candidate = Some(candidate.clone());
+                }
+                Some(VariableType::Pointer(_)) if *candidate == VariableType::UnknownPointer => {}
+                Some(current) if current != candidate => {
+                    self.candidate = None;
+                    self.conflicting = true;
+                }
+                None => self.candidate = Some(candidate.clone()),
+                _ => {}
             }
         }
+    }
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+struct FieldEvidence {
+    size: Option<usize>,
+    size_conflict: bool,
+    candidate: Option<VariableType>,
+    type_conflict: bool,
+}
+
+impl FieldEvidence {
+    fn merge(&mut self, other: &Self) {
+        if self.size_conflict || other.size_conflict {
+            self.size = None;
+            self.size_conflict = true;
+        } else if let Some(size) = other.size {
+            if self.size.is_some_and(|current| current != size) {
+                self.size = None;
+                self.size_conflict = true;
+            } else {
+                self.size = Some(size);
+            }
+        }
+        if self.type_conflict || other.type_conflict {
+            self.candidate = None;
+            self.type_conflict = true;
+        } else if let Some(candidate) = &other.candidate {
+            match self.candidate.as_ref() {
+                Some(VariableType::UnknownPointer)
+                    if matches!(candidate, VariableType::Pointer(_)) =>
+                {
+                    self.candidate = Some(candidate.clone());
+                }
+                Some(VariableType::Pointer(_)) if *candidate == VariableType::UnknownPointer => {}
+                Some(current) if current != candidate => {
+                    self.candidate = None;
+                    self.type_conflict = true;
+                }
+                None => self.candidate = Some(candidate.clone()),
+                _ => {}
+            }
+        }
+    }
+
+    fn ty(&self) -> VariableType {
+        if !self.size_conflict && !self.type_conflict {
+            if let Some(candidate) = &self.candidate {
+                return candidate.clone();
+            }
+        }
+        VariableType::Unknown(self.size)
     }
 }
 
@@ -59,8 +123,11 @@ struct Analysis {
     evidence: HashMap<Slot, Evidence>,
     copies: Vec<(Slot, Slot)>,
     pointer_uses: HashMap<Slot, PointerUse>,
-    derived_addresses: Vec<(Slot, Slot)>,
+    derived_addresses: Vec<(Slot, Slot, Option<usize>)>,
     pointees: HashMap<Slot, PointeeEvidence>,
+    fields: HashMap<Slot, BTreeMap<usize, FieldEvidence>>,
+    field_links: HashSet<FieldLink>,
+    field_slot_types: HashMap<Slot, PointeeEvidence>,
 }
 
 fn direct_slot(expr: &IRExpr, owner: SyntheticFunctionId) -> Option<Slot> {
@@ -92,6 +159,14 @@ fn pointee_width(ty: &VariableType) -> Option<usize> {
         VariableType::Bool => Some(1),
         VariableType::Integer(bits) | VariableType::UnsignedInteger(bits) => Some(bits / 8),
         _ => None,
+    }
+}
+
+fn value_width(ty: &VariableType) -> Option<usize> {
+    match ty {
+        VariableType::Pointer(_) | VariableType::UnknownPointer => Some(8),
+        VariableType::Unknown(size) => *size,
+        _ => pointee_width(ty),
     }
 }
 
@@ -169,13 +244,35 @@ impl Analysis {
     }
 
     fn pointer_address(&mut self, expr: &IRExpr, owner: SyntheticFunctionId) {
+        if let Some((base, offset)) = field_address(expr)
+            && let Some(slot) = direct_slot(base, owner)
+            && self.width(slot) == Some(8)
+        {
+            let size = match expr {
+                IRExpr::MemoryAddress { size, .. } => *size,
+                _ => None,
+            };
+            self.fields
+                .entry(slot)
+                .or_default()
+                .entry(offset)
+                .or_default()
+                .merge(&FieldEvidence {
+                    size,
+                    ..FieldEvidence::default()
+                });
+        }
+        self.pointer_address_uses(expr, owner);
+    }
+
+    fn pointer_address_uses(&mut self, expr: &IRExpr, owner: SyntheticFunctionId) {
         match expr {
-            IRExpr::MemoryAddress { address, .. } => self.pointer_address(address, owner),
+            IRExpr::MemoryAddress { address, .. } => self.pointer_address_uses(address, owner),
             _ => {
                 if let Some(slot) = direct_slot(expr, owner) {
                     self.pointer_use(slot, true);
                 } else if let Some((base, offset)) = self.address_base(expr, owner) {
-                    self.pointer_address(base, owner);
+                    self.pointer_address_uses(base, owner);
                     self.pointer_value(offset, owner);
                 } else {
                     self.pointer_value(expr, owner);
@@ -221,7 +318,11 @@ impl Analysis {
             && let Some(src) = direct_slot(base, owner)
             && self.width(src) == Some(8)
         {
-            self.derived_addresses.push((dest, src));
+            self.derived_addresses.push((
+                dest,
+                src,
+                field_address(value).map(|(_, offset)| offset),
+            ));
             self.pointer_value(offset, owner);
             return;
         }
@@ -487,7 +588,7 @@ impl Analysis {
                     }
                 }
             }
-            for &(dest, base) in &self.derived_addresses {
+            for &(dest, base, _) in &self.derived_addresses {
                 let result = self.pointer_uses.get(&dest).copied().unwrap_or_default();
                 let uses = self.pointer_uses.entry(base).or_default();
                 if result.dereferenced && !uses.dereferenced {
@@ -508,7 +609,7 @@ impl Analysis {
         // An addition whose result is never used as an address is an ordinary
         // arithmetic use of its base. Propagate that disqualification through
         // copies and earlier derived addresses.
-        for &(dest, base) in &self.derived_addresses {
+        for &(dest, base, _) in &self.derived_addresses {
             if !self
                 .pointer_uses
                 .get(&dest)
@@ -530,7 +631,7 @@ impl Analysis {
                     }
                 }
             }
-            for &(dest, base) in &self.derived_addresses {
+            for &(dest, base, _) in &self.derived_addresses {
                 if self.pointer_uses.get(&dest).is_some_and(|uses| uses.other) {
                     let uses = self.pointer_uses.entry(base).or_default();
                     changed |= !uses.other;
@@ -543,10 +644,75 @@ impl Analysis {
         }
     }
 
-    fn scalar_type(&self, slot: Slot) -> Option<VariableType> {
+    fn known_type(&self, slot: Slot) -> Option<VariableType> {
         let original = self.types.get(&slot)?.clone();
-        let inferred = self.inferred(slot, original);
-        pointee_width(&inferred).map(|_| inferred)
+        let inferred = self.inferred(slot, self.inferred_pointer(slot, original));
+        match inferred {
+            VariableType::Bool
+            | VariableType::Integer(_)
+            | VariableType::UnsignedInteger(_)
+            | VariableType::UnknownPointer
+            | VariableType::Pointer(_) => Some(inferred),
+            _ => None,
+        }
+    }
+
+    fn record_field_type(
+        &mut self,
+        address: &IRExpr,
+        ty: VariableType,
+        owner: SyntheticFunctionId,
+    ) {
+        let Some((base, offset)) = field_address(address) else {
+            return;
+        };
+        let Some(slot) = direct_slot(base, owner) else {
+            return;
+        };
+        let Some(size) = value_width(&ty) else {
+            return;
+        };
+        if let IRExpr::MemoryAddress {
+            size: Some(access_size),
+            ..
+        } = address
+            && *access_size != size
+        {
+            return;
+        }
+        if self.width(slot) == Some(8) {
+            self.fields
+                .entry(slot)
+                .or_default()
+                .entry(offset)
+                .or_default()
+                .merge(&FieldEvidence {
+                    size: Some(size),
+                    candidate: Some(ty),
+                    ..FieldEvidence::default()
+                });
+        }
+    }
+
+    fn link_field(&mut self, value: Slot, address: &IRExpr, owner: SyntheticFunctionId) {
+        let Some((base, offset)) = field_address(address) else {
+            return;
+        };
+        let Some(base) = direct_slot(base, owner) else {
+            return;
+        };
+        if self.width(base) == Some(8) {
+            let size = match address {
+                IRExpr::MemoryAddress { size, .. } => *size,
+                _ => None,
+            };
+            self.field_links.insert(FieldLink {
+                value,
+                base,
+                offset,
+                size,
+            });
+        }
     }
 
     fn record_pointee(&mut self, address: &IRExpr, ty: VariableType, owner: SyntheticFunctionId) {
@@ -573,10 +739,14 @@ impl Analysis {
     }
 
     fn pointee_assignment(&mut self, dest: Slot, value: &IRExpr, owner: SyntheticFunctionId) {
-        if let IRExpr::Deref(address) = value
-            && let Some(ty) = self.scalar_type(dest)
-        {
-            self.record_pointee(address, ty, owner);
+        if let IRExpr::Deref(address) = value {
+            self.link_field(dest, address, owner);
+            if let Some(ty) = self.known_type(dest) {
+                if pointee_width(&ty).is_some() {
+                    self.record_pointee(address, ty.clone(), owner);
+                }
+                self.record_field_type(address, ty, owner);
+            }
         }
     }
 
@@ -599,19 +769,32 @@ impl Analysis {
                 }
                 if let IRExpr::Deref(address) = dest
                     && let Some(src) = direct_slot(src, owner)
-                    && let Some(ty) = self.scalar_type(src)
                 {
-                    self.record_pointee(address, ty, owner);
+                    self.link_field(src, address, owner);
+                    if let Some(ty) = self.known_type(src) {
+                        if pointee_width(&ty).is_some() {
+                            self.record_pointee(address, ty.clone(), owner);
+                        }
+                        self.record_field_type(address, ty, owner);
+                    }
                 }
             }
             IRInst::LoadVariable { variable, address } => {
-                if let Some(ty) = self.scalar_type(Slot::Variable(*variable)) {
-                    self.record_pointee(address, ty, owner);
+                self.link_field(Slot::Variable(*variable), address, owner);
+                if let Some(ty) = self.known_type(Slot::Variable(*variable)) {
+                    if pointee_width(&ty).is_some() {
+                        self.record_pointee(address, ty.clone(), owner);
+                    }
+                    self.record_field_type(address, ty, owner);
                 }
             }
             IRInst::StoreVariable { address, variable } => {
-                if let Some(ty) = self.scalar_type(Slot::Variable(*variable)) {
-                    self.record_pointee(address, ty, owner);
+                self.link_field(Slot::Variable(*variable), address, owner);
+                if let Some(ty) = self.known_type(Slot::Variable(*variable)) {
+                    if pointee_width(&ty).is_some() {
+                        self.record_pointee(address, ty.clone(), owner);
+                    }
+                    self.record_field_type(address, ty, owner);
                 }
             }
             IRInst::CallSynthetic {
@@ -673,9 +856,121 @@ impl Analysis {
         }
     }
 
+    fn propagate_fields(&mut self) {
+        loop {
+            let mut changed = false;
+            for &(dest, src) in &self.copies {
+                let mut merged = self.fields.get(&dest).cloned().unwrap_or_default();
+                for (&offset, evidence) in self.fields.get(&src).into_iter().flatten() {
+                    merged.entry(offset).or_default().merge(evidence);
+                }
+                for slot in [dest, src] {
+                    if self.fields.get(&slot) != Some(&merged) {
+                        self.fields.insert(slot, merged.clone());
+                        changed = true;
+                    }
+                }
+            }
+            for &(dest, base, displacement) in &self.derived_addresses {
+                let Some(displacement) = displacement else {
+                    continue;
+                };
+                if let Some(fields) = self.fields.get(&dest).cloned() {
+                    let base_fields = self.fields.entry(base).or_default();
+                    for (offset, evidence) in fields {
+                        if let Some(offset) = displacement.checked_add(offset) {
+                            let field = base_fields.entry(offset).or_default();
+                            let previous = field.clone();
+                            field.merge(&evidence);
+                            changed |= *field != previous;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    fn propagate_field_types_to_slots(&mut self) {
+        for link in &self.field_links {
+            let Some(field) = self
+                .fields
+                .get(&link.base)
+                .and_then(|fields| fields.get(&link.offset))
+            else {
+                continue;
+            };
+            let ty = field.ty();
+            let Some(size) = value_width(&ty) else {
+                continue;
+            };
+            if self.width(link.value) != Some(size)
+                || link.size.is_some_and(|access_size| access_size != size)
+            {
+                continue;
+            }
+            self.field_slot_types
+                .entry(link.value)
+                .or_default()
+                .merge(&PointeeEvidence {
+                    candidate: Some(ty),
+                    conflicting: false,
+                });
+        }
+        loop {
+            let mut changed = false;
+            for &(dest, src) in &self.copies {
+                let mut merged = self
+                    .field_slot_types
+                    .get(&dest)
+                    .cloned()
+                    .unwrap_or_default();
+                merged.merge(&self.field_slot_types.get(&src).cloned().unwrap_or_default());
+                for slot in [dest, src] {
+                    if self.field_slot_types.get(&slot) != Some(&merged) {
+                        self.field_slot_types.insert(slot, merged.clone());
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    fn inferred_type(&self, slot: Slot, original: VariableType) -> VariableType {
+        let inferred = self.inferred(slot, self.inferred_pointer(slot, original));
+        if matches!(
+            inferred,
+            VariableType::Unknown(_) | VariableType::UnknownPointer
+        ) {
+            self.field_slot_types
+                .get(&slot)
+                .and_then(|evidence| evidence.candidate.clone())
+                .unwrap_or(inferred)
+        } else {
+            inferred
+        }
+    }
+
     fn inferred_pointer(&self, slot: Slot, original: VariableType) -> VariableType {
         if original != VariableType::Unknown(Some(8)) {
             return original;
+        }
+        if let Some(fields) = self.fields.get(&slot)
+            && fields.len() > 1
+        {
+            let fields = fields
+                .iter()
+                .map(|(&offset, evidence)| StructField {
+                    offset,
+                    ty: evidence.ty(),
+                })
+                .collect();
+            return VariableType::Pointer(Box::new(VariableType::Struct(fields)));
         }
         let uses = self.pointer_uses.get(&slot).copied().unwrap_or_default();
         let integer = self
@@ -743,7 +1038,7 @@ fn retype(instr: &mut IRInst, analysis: &Analysis) {
         IRInst::DeclareVariable { variable, ty }
         | IRInst::DeclareAndAssignVariable { variable, ty, .. } => {
             let slot = Slot::Variable(*variable);
-            *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, ty.clone()));
+            *ty = analysis.inferred_type(slot, ty.clone());
         }
         IRInst::If {
             then_branch,
@@ -876,17 +1171,27 @@ pub fn run(program: &mut Program) {
         }
     }
     analysis.propagate_pointees();
+    // Pointee evidence can turn a loaded value into a typed pointer. Revisit
+    // memory transfers so those pointer types become field types as well.
+    for (index, function) in program.functions.iter().enumerate() {
+        let owner = SyntheticFunctionId { id: index };
+        for (_, instr) in &function.body {
+            analysis.pointee_instruction(instr, owner, program);
+        }
+    }
+    analysis.propagate_fields();
+    analysis.propagate_field_types_to_slots();
     for (index, function) in program.functions.iter_mut().enumerate() {
         let owner = SyntheticFunctionId { id: index };
         for parameter in &mut function.parameters {
             match parameter {
                 Parameter::Argument { ordinal, ty } => {
                     let slot = Slot::Argument(owner, *ordinal);
-                    *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, ty.clone()));
+                    *ty = analysis.inferred_type(slot, ty.clone());
                 }
                 Parameter::Slot { variable, ty } => {
                     let slot = Slot::Variable(*variable);
-                    *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, ty.clone()));
+                    *ty = analysis.inferred_type(slot, ty.clone());
                 }
             }
         }

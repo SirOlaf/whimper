@@ -51,11 +51,19 @@ pub enum VariableType {
     UnknownPointer,
     /// A pointer whose pointee type is supported by tier 5 evidence.
     Pointer(Box<VariableType>),
+    /// A pointee accessed through distinct, constant field offsets.
+    Struct(Vec<StructField>),
     Bool,
     /// Integer-shaped, with no signedness evidence. Width is in bits.
     Integer(usize),
     /// An unsigned comparison establishes how the value is interpreted.
     UnsignedInteger(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructField {
+    pub offset: usize,
+    pub ty: VariableType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +115,44 @@ pub enum IRExpr {
     Variable(VariableId),
     Bool(bool),
     Not(Box<IRExpr>),
+}
+
+/// A direct slot and its constant byte offset in a memory address.
+pub(crate) fn field_address(expr: &IRExpr) -> Option<(&IRExpr, usize)> {
+    match expr {
+        IRExpr::MemoryAddress { address, .. } => field_address(address),
+        IRExpr::Argument(_) | IRExpr::Variable(_) => Some((expr, 0)),
+        IRExpr::BinOp { kind, lhs, rhs } => {
+            let constant = |expr: &IRExpr| match expr {
+                IRExpr::CU8(value) => Some(*value as usize),
+                IRExpr::CU32(value) => Some(*value as usize),
+                IRExpr::CU64(value) if *value <= isize::MAX as u64 => usize::try_from(*value).ok(),
+                _ => None,
+            };
+            match kind {
+                IRBinOpKind::Add => {
+                    if let (Some((base, offset)), Some(extra)) = (field_address(lhs), constant(rhs))
+                    {
+                        offset.checked_add(extra).map(|offset| (base, offset))
+                    } else if let (Some(extra), Some((base, offset))) =
+                        (constant(lhs), field_address(rhs))
+                    {
+                        offset.checked_add(extra).map(|offset| (base, offset))
+                    } else {
+                        None
+                    }
+                }
+                IRBinOpKind::Sub => {
+                    let (base, offset) = field_address(lhs)?;
+                    offset
+                        .checked_sub(constant(rhs)?)
+                        .map(|offset| (base, offset))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]

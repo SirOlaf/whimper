@@ -4,7 +4,7 @@ use std::{collections::HashMap, fmt::Write};
 
 use super::ir::{
     IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, SyntheticFunction,
-    SyntheticFunctionId, VariableId, VariableType,
+    SyntheticFunctionId, VariableId, VariableType, field_address,
 };
 
 #[derive(Default)]
@@ -101,6 +101,20 @@ impl RenderTypes {
             _ => false,
         }
     }
+
+    fn struct_field<'a>(&self, address: &'a IRExpr) -> Option<(&'a IRExpr, usize)> {
+        let (base, offset) = field_address(address)?;
+        let Some(VariableType::Pointer(pointee)) = self.direct_type(base) else {
+            return None;
+        };
+        let VariableType::Struct(fields) = *pointee else {
+            return None;
+        };
+        fields
+            .iter()
+            .any(|field| field.offset == offset)
+            .then_some((base, offset))
+    }
 }
 
 fn function_name(id: SyntheticFunctionId) -> String {
@@ -117,9 +131,25 @@ fn type_name(ty: VariableType) -> String {
         VariableType::Unknown(None) => "Unknown".to_string(),
         VariableType::UnknownPointer => "Unknown*".to_string(),
         VariableType::Pointer(pointee) => format!("{}*", type_name(*pointee)),
+        VariableType::Struct(fields) => {
+            let fields = fields
+                .into_iter()
+                .map(|field| format!("_0x{:x}: {}", field.offset, type_name(field.ty)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("struct {{ {fields} }}")
+        }
         VariableType::Bool => "Bool".to_string(),
         VariableType::Integer(bits) => format!("i{bits}"),
         VariableType::UnsignedInteger(bits) => format!("u{bits}"),
+    }
+}
+
+fn dereference(address: &IRExpr, types: &RenderTypes) -> String {
+    if let Some((base, offset)) = types.struct_field(address) {
+        format!("{}->_0x{offset:x}", expression(base, 8, types))
+    } else {
+        format!("*({})", expression(address, 0, types))
     }
 }
 
@@ -181,7 +211,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> Stri
                 expression(rhs, own_precedence + 1, types)
             )
         }
-        IRExpr::Deref(address) => format!("*({})", expression(address, 0, types)),
+        IRExpr::Deref(address) => dereference(address, types),
         IRExpr::MemoryAddress { address, .. } => {
             format!("(Unknown*)({})", expression(address, 0, types))
         }
@@ -269,17 +299,17 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize, types: &Rende
         IRInst::LoadVariable { variable, address } => {
             writeln!(
                 output,
-                "{padding}{} = *({});",
+                "{padding}{} = {};",
                 variable_name(*variable),
-                expression(address, 0, types)
+                dereference(address, types)
             )
             .unwrap();
         }
         IRInst::StoreVariable { address, variable } => {
             writeln!(
                 output,
-                "{padding}*({}) = {};",
-                expression(address, 0, types),
+                "{padding}{} = {};",
+                dereference(address, types),
                 variable_name(*variable)
             )
             .unwrap();
