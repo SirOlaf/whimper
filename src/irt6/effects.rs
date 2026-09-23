@@ -30,6 +30,10 @@ impl Effects {
                 self.memory_read = true;
                 self.expression(address);
             }
+            IRExpr::CStringLength(base) => {
+                self.memory_read = true;
+                self.expression(base);
+            }
             IRExpr::ElementAddress { base, index, .. } => {
                 self.expression(base);
                 self.expression(index);

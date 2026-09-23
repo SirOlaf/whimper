@@ -67,6 +67,9 @@ pub enum VariableType {
     /// An address of homogeneous elements with unknown length. This is not
     /// an owning container and implies neither a capacity nor bounds checks.
     Vector(Box<VariableType>),
+    /// A zero-terminated sequence of signed bytes. Its length excludes the
+    /// terminator and does not imply ownership or a stored length field.
+    CString,
     /// A struct definition in this tier's program.
     Struct(StructId),
     Bool,
@@ -147,6 +150,9 @@ pub enum IRExpr {
         /// Both the element stride and memory access width, in bytes.
         element_size: usize,
     },
+    /// Scan a CString for its first zero byte and return the number of bytes
+    /// before it. This is a memory read, not a cached container property.
+    CStringLength(Box<IRExpr>),
     Argument(usize),
     /// Numeric conversion: interpret the input using `source`, then convert
     /// to `target`, truncating modulo its width. No register alias semantics.

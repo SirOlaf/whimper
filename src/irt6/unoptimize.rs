@@ -9,6 +9,7 @@ use std::{collections::HashMap, fmt::Write};
 use super::{
     arithmetic::{Bindings, Context, Kind, Value},
     effects::{Effects, repeatable},
+    infer_types,
     ir::{IRBinOpKind, IRExpr, IRInst, LoopCondition, Program, VariableId, field_address},
     shapes::{self, LoopAnalysis},
 };
@@ -213,6 +214,10 @@ struct Rule {
 
 const RULES: &[Rule] = &[
     Rule {
+        name: "cstring-empty-check",
+        apply: recover_cstring_empty_check,
+    },
+    Rule {
         name: "boolean-branch-to-return",
         apply: recover_boolean_return,
     },
@@ -251,6 +256,7 @@ fn simplify_boolean_expression(expr: &mut IRExpr) -> bool {
             left_changed || right_changed
         }
         IRExpr::Deref(inner)
+        | IRExpr::CStringLength(inner)
         | IRExpr::MemoryAddress { address: inner, .. }
         | IRExpr::Convert { value: inner, .. }
         | IRExpr::Not(inner) => simplify_boolean_expression(inner),
@@ -323,6 +329,20 @@ fn recover_boolean_return(
 ) -> Option<usize> {
     let value = shapes::boolean_return(instr)?;
     *instr = IRInst::Return(Some(value));
+    Some(offset)
+}
+
+fn recover_cstring_empty_check(
+    instr: &mut IRInst,
+    offset: usize,
+    context: &Context,
+    facts: &Facts,
+    _options: &Options,
+) -> Option<usize> {
+    let IRInst::If { condition, .. } = instr else {
+        return None;
+    };
+    *condition = shapes::cstring_empty_check(condition, &facts.loaded_from, context)?;
     Some(offset)
 }
 
@@ -893,6 +913,23 @@ pub fn run_with_options(program: &mut Program, options: Options) -> Report {
                 break;
             }
         }
+    }
+    infer_types::run(program);
+    for function in &mut program.functions {
+        let context = Context::from_function(function);
+        sequence(
+            function
+                .body
+                .iter_mut()
+                .map(|(offset, instr)| (*offset, instr)),
+            &context,
+            Facts::default(),
+            &options,
+            &mut report,
+        );
+    }
+    for function in &program.functions {
+        let context = Context::from_function(function);
         for (_, instr) in &function.body {
             collect(instr, &context, &mut report.remaining);
         }

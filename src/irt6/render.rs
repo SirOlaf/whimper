@@ -131,7 +131,12 @@ impl<'a> RenderTypes<'a> {
     fn pointer_address(&self, expr: &IRExpr) -> bool {
         if matches!(
             self.direct_type(expr),
-            Some(VariableType::UnknownPointer | VariableType::Pointer(_) | VariableType::Vector(_))
+            Some(
+                VariableType::UnknownPointer
+                    | VariableType::Pointer(_)
+                    | VariableType::Vector(_)
+                    | VariableType::CString
+            )
         ) {
             return true;
         }
@@ -180,6 +185,7 @@ fn type_name(ty: VariableType, structs: &[StructDefinition]) -> String {
         VariableType::UnknownPointer => "Unknown*".to_string(),
         VariableType::Pointer(pointee) => format!("{}*", type_name(*pointee, structs)),
         VariableType::Vector(element) => format!("vec<{}>", type_name(*element, structs)),
+        VariableType::CString => "CString".to_string(),
         VariableType::Struct(id) => structs.get(id.id).map_or_else(
             || format!("AStruct{}", id.id),
             |definition| definition.name.clone(),
@@ -259,6 +265,7 @@ fn precedence(expr: &IRExpr) -> u8 {
         | IRExpr::Deref(..)
         | IRExpr::MemoryAddress { .. }
         | IRExpr::ElementAddress { .. } => 9,
+        IRExpr::CStringLength(..) => 10,
         _ => 10,
     }
 }
@@ -312,6 +319,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> Stri
         }
         IRExpr::Deref(address) => dereference(address, types),
         IRExpr::ElementAddress { .. } => format!("&{}", dereference(expr, types)),
+        IRExpr::CStringLength(base) => format!("{}.len()", expression(base, 10, types)),
         IRExpr::MemoryAddress { address, .. } => {
             format!("(Unknown*)({})", expression(address, 0, types))
         }

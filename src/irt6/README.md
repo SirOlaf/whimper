@@ -90,6 +90,13 @@ counter width and the offsets of the implicit advance and load. The rendered
 `for v: T in vector[start..]` denotes iteration through successive elements
 until the first zero element, with the original counter wrap behavior.
 
+After operation recovery, Tier 6 propagates `CString` from recovered
+zero-terminated byte iterations through direct copies and synthetic call
+arguments. This evidence is unavailable to Tier 5, which retains `vec<i8>`.
+Once promoted, a still-valid cached read of byte zero compared with zero can
+be represented as `string.len() == 0`. The length expression scans memory for
+the terminator and is treated as a memory read by later analyses.
+
 The boolean-return rule replaces an `if` whose two branches only return zero
 and one with a return of the condition's boolean value or its negation. The
 constants must have the same width. The condition is still evaluated once,
