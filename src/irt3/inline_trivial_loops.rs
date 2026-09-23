@@ -188,7 +188,11 @@ fn rewrite_instruction(
                 rewrite_expression(argument, aliases, native_states);
             }
         }
-        IRInst::Return(None) | IRInst::Break | IRInst::Continue | IRInst::End => {}
+        IRInst::Return(None)
+        | IRInst::Break
+        | IRInst::Continue
+        | IRInst::ContinueLoop(_)
+        | IRInst::End => {}
     }
 }
 
@@ -258,7 +262,12 @@ fn rewrite_self_calls(
                 })
                 .collect(),
         }],
-        IRInst::Loop { entry_offset, body } => vec![IRInst::Loop {
+        IRInst::Loop {
+            label,
+            entry_offset,
+            body,
+        } => vec![IRInst::Loop {
+            label,
             entry_offset,
             body: body
                 .into_iter()
@@ -322,9 +331,8 @@ fn hoist_single_exit_call(body: &mut [(usize, IRInst)]) -> Option<(usize, IRInst
         return None;
     }
 
-    body.iter_mut().find_map(|(offset, instr)| {
-        replace_exit_call(instr).map(|call| (*offset, call))
-    })
+    body.iter_mut()
+        .find_map(|(offset, instr)| replace_exit_call(instr).map(|call| (*offset, call)))
 }
 
 fn max_variable_id(function: &SyntheticFunction) -> Option<usize> {
@@ -410,6 +418,7 @@ fn max_variable_id(function: &SyntheticFunction) -> Option<usize> {
             | IRInst::DeclareVariable { .. }
             | IRInst::Break
             | IRInst::Continue
+            | IRInst::ContinueLoop(_)
             | IRInst::End => {}
         }
     }
@@ -581,6 +590,7 @@ fn lower_function(function: &mut SyntheticFunction, function_id: SyntheticFuncti
     body.push((
         function.entry_offset,
         IRInst::Loop {
+            label: None,
             entry_offset: function.entry_offset,
             body: loop_body,
         },

@@ -164,14 +164,21 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
             for instr in then_branch {
                 instruction(output, instr, indent + 1);
             }
-            writeln!(output, "{padding}}} else {{").unwrap();
-            for instr in else_branch {
-                instruction(output, instr, indent + 1);
+            if !else_branch.is_empty() {
+                writeln!(output, "{padding}}} else {{").unwrap();
+                for instr in else_branch {
+                    instruction(output, instr, indent + 1);
+                }
             }
             writeln!(output, "{padding}}}").unwrap();
         }
-        IRInst::Loop { entry_offset, body } => {
-            writeln!(output, "{padding}loop {{").unwrap();
+        IRInst::Loop {
+            label,
+            entry_offset,
+            body,
+        } => {
+            let label = label.map_or_else(String::new, |label| format!("loop_{}: ", label.id));
+            writeln!(output, "{padding}{label}loop {{").unwrap();
             let nested_padding = "    ".repeat(indent + 1);
             let mut previous_offset = Some(*entry_offset);
             for (offset, instr) in body {
@@ -185,6 +192,9 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
         }
         IRInst::Continue => {
             writeln!(output, "{padding}continue;").unwrap();
+        }
+        IRInst::ContinueLoop(label) => {
+            writeln!(output, "{padding}continue loop_{};", label.id).unwrap();
         }
         IRInst::Break => {
             writeln!(output, "{padding}break;").unwrap();

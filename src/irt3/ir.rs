@@ -40,6 +40,12 @@ pub struct VariableId {
     pub id: usize,
 }
 
+/// Identifies a loop when a recovered back edge crosses another loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LoopId {
+    pub id: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VariableType {
     Unknown(Option<usize>),
@@ -123,16 +129,17 @@ pub enum IRInst {
         variable: VariableId,
     },
 
-    /// Each arm is a terminal transfer: a synthetic call, jump, or end.
+    /// Structured branches may fall through to a shared continuation.
     If {
         condition: IRExpr,
         then_branch: Vec<IRInst>,
         else_branch: Vec<IRInst>,
     },
 
-    /// Repeat the body when it reaches Continue; Break resumes after the loop.
+    /// Repeat the body on fallthrough or Continue; Break resumes after the loop.
     /// Source offsets are retained for the top-level instructions in the loop.
     Loop {
+        label: Option<LoopId>,
         entry_offset: usize,
         body: Vec<(usize, IRInst)>,
     },
@@ -142,6 +149,9 @@ pub enum IRInst {
 
     /// Continue at the beginning of the enclosing Loop.
     Continue,
+
+    /// Continue a specific enclosing loop, including across nested loops.
+    ContinueLoop(LoopId),
 
     /// Tail call into a shared synthetic function; the caller does not resume.
     CallSynthetic {

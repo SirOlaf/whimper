@@ -104,6 +104,7 @@ fn instruction_accesses(instr: &IRInst, accesses: &mut Vec<Access>) {
         | IRInst::DeclareVariable { .. }
         | IRInst::Break
         | IRInst::Continue
+        | IRInst::ContinueLoop(_)
         | IRInst::End => {}
     }
 }
@@ -338,6 +339,7 @@ fn replace_instruction(instr: &mut IRInst, variable: VariableId, value: &IRExpr)
         | IRInst::DeclareVariable { .. }
         | IRInst::Break
         | IRInst::Continue
+        | IRInst::ContinueLoop(_)
         | IRInst::End => false,
     }
 }

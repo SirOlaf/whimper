@@ -1,3 +1,5 @@
+mod cfg;
+pub mod inline_functions;
 pub mod inline_trivial_loops;
 pub mod inline_variables;
 pub mod ir;
@@ -168,5 +170,6 @@ pub fn lift(source: &t2::Program) -> Program {
             .collect(),
     };
     let program = inline_trivial_loops::tr(program);
-    inline_variables::tr(program)
+    let program = inline_variables::tr(program);
+    inline_functions::tr(program)
 }
