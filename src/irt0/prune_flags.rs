@@ -1,139 +1,63 @@
+//! Conservatively remove flags that are never read in the lifted program.
+//! Overwritten writes are removed after tier 1 has established control flow.
+
 use std::collections::HashSet;
 
-use crate::irt0::ir::{self, IRExpr, IRInst, NativeFlag};
+use super::ir::{IRExpr, IRInst, NativeFlag, Program};
 
-type SourceIdx = usize;
-
-// Minimal instruction set that lets us safely eliminate some flags before CFG recovery
-#[derive(Debug)]
-enum FlagIR {
-    ReadFlag(NativeFlag),
-    WriteFlag {
-        flag: NativeFlag,
-        source_idx: SourceIdx,
-    },
-    Boundary, // Flag analysis can only cross boundaries after CFG, later pass
-}
-
-// TODO: Refactor, these can be pure functions
-fn gather_flag_ops_from_expr(x: &IRExpr) -> Vec<FlagIR> {
-    let mut res: Vec<FlagIR> = vec![];
-    match x {
-        IRExpr::Reg(..)
-        | IRExpr::Deref(..)
-        | IRExpr::CU8(..)
-        | IRExpr::CU32(..)
-        | IRExpr::CU64(..) => (),
-        IRExpr::BinOp { lhs, rhs, .. } => {
-            res.extend(gather_flag_ops_from_expr(lhs));
-            res.extend(gather_flag_ops_from_expr(rhs));
-        }
+fn read_expr(expr: &IRExpr, used: &mut HashSet<NativeFlag>) {
+    match expr {
         IRExpr::Flag(flag) => {
-            res.push(FlagIR::ReadFlag(flag.clone()));
+            used.insert(flag.clone());
         }
+        IRExpr::BinOp { lhs, rhs, .. } => {
+            read_expr(lhs, used);
+            read_expr(rhs, used);
+        }
+        IRExpr::Deref { address: value, .. }
+        | IRExpr::ExtractBytes { value, .. }
+        | IRExpr::ZeroExtend { value, .. }
+        | IRExpr::SignExtend { value, .. } => read_expr(value, used),
+        _ => {}
     }
-    res
 }
 
-fn gather_flag_ops_from_instr(x: &mut IRInst, idx: SourceIdx) -> Vec<FlagIR> {
-    let mut res: Vec<FlagIR> = vec![];
-    match x {
-        IRInst::Jmp(..) | IRInst::Ret(..) => {
-            res.push(FlagIR::Boundary);
-        }
-        IRInst::SetFlagsFrom(flags, _) | IRInst::ClearFlags(flags) => {
-            for flag in flags.iter() {
-                res.push(FlagIR::WriteFlag {
-                    flag: flag.clone(),
-                    source_idx: idx,
-                });
+fn read_inst(instr: &IRInst, used: &mut HashSet<NativeFlag>) {
+    match instr {
+        IRInst::Asgn { dest, src } => {
+            if !matches!(dest, IRExpr::Flag(_)) {
+                read_expr(dest, used);
             }
-            flags.clear();
+            read_expr(src, used);
         }
-        IRInst::Asgn { src, .. } => {
-            res.extend(gather_flag_ops_from_expr(src));
+        IRInst::If(condition, inner) => {
+            read_expr(condition, used);
+            read_inst(inner, used);
         }
-        IRInst::If(expr, instr) => {
-            res.extend(gather_flag_ops_from_expr(expr));
-            res.extend(gather_flag_ops_from_instr(instr, idx));
+        IRInst::Jmp(expr) | IRInst::Ret(Some(expr)) | IRInst::SetFlagsFrom(_, expr) => {
+            read_expr(expr, used)
         }
+        _ => {}
     }
-    res
 }
 
-fn prune_program(program: ir::Program, flag_code: Vec<FlagIR>) -> ir::Program {
-    // TODO: Clean up, we do not need another two iterators here
-    let mut program = program;
-    for f in flag_code {
-        if let FlagIR::WriteFlag { flag, source_idx } = f {
-            match &mut program[source_idx].1 {
-                IRInst::SetFlagsFrom(flags, _) | IRInst::ClearFlags(flags) => {
-                    flags.insert(flag);
-                }
-                _ => (),
-            }
+pub fn tr(mut program: Program) -> Program {
+    let mut used = HashSet::new();
+    for (_, instr) in &program {
+        read_inst(instr, &mut used);
+    }
+    program.retain_mut(|(_, instr)| match instr {
+        IRInst::SetFlagsFrom(flags, _)
+        | IRInst::ClearFlags(flags)
+        | IRInst::InvalidateFlags(flags) => {
+            flags.retain(|flag| used.contains(flag));
+            !flags.is_empty()
         }
-    }
-
-    let mut res: ir::Program = vec![];
-    for instr in program.into_iter() {
-        match &instr.1 {
-            IRInst::SetFlagsFrom(flags, _) | IRInst::ClearFlags(flags) => {
-                if !flags.is_empty() {
-                    res.push(instr);
-                }
-            }
-            _ => res.push(instr),
-        }
-    }
-    res
-}
-
-pub fn tr(program: ir::Program) -> ir::Program {
-    let mut program = program;
-    let mut flag_code: Vec<FlagIR> = vec![];
-    for (idx, (_, instr)) in program.iter_mut().enumerate() {
-        flag_code.extend(gather_flag_ops_from_instr(instr, idx));
-    }
-
-    // Gather info, clean up redundant flags. Must be reversed to account for potential jump targets
-    let mut used_flags: HashSet<NativeFlag> = HashSet::new(); // Per program
-    let mut dirty_flags: HashSet<NativeFlag> = HashSet::new(); // Per boundary
-    let mut rev_code: Vec<FlagIR> = vec![];
-    for f in flag_code.into_iter().rev() {
-        match f {
-            FlagIR::ReadFlag(flag) => {
-                used_flags.insert(flag.clone());
-                rev_code.push(FlagIR::ReadFlag(flag));
-            }
-            FlagIR::WriteFlag { flag, source_idx } => {
-                if !dirty_flags.contains(&flag) {
-                    dirty_flags.insert(flag.clone());
-                    rev_code.push(FlagIR::WriteFlag { flag, source_idx });
-                }
-            }
-            FlagIR::Boundary => {
-                dirty_flags.clear();
-                rev_code.push(FlagIR::Boundary);
-            }
-        }
-    }
-
-    // Clean up unused flags
-    let mut flag_code: Vec<FlagIR> = vec![];
-    for f in rev_code.into_iter().rev() {
-        match f {
-            FlagIR::WriteFlag { flag, source_idx } => {
-                if used_flags.contains(&flag) {
-                    flag_code.push(FlagIR::WriteFlag { flag, source_idx });
-                }
-            }
-            FlagIR::ReadFlag(..) | FlagIR::Boundary => {
-                flag_code.push(f);
-            }
-        }
-    }
-
-    // Finalize
-    prune_program(program, flag_code)
+        IRInst::Asgn {
+            dest: IRExpr::Flag(flag),
+            ..
+        } => used.contains(flag),
+        _ => true,
+    });
+    program
 }

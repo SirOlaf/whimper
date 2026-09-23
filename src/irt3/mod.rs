@@ -49,7 +49,10 @@ fn bin_op(kind: &t2::IRBinOpKind) -> IRBinOpKind {
     match kind {
         t2::IRBinOpKind::Add => IRBinOpKind::Add,
         t2::IRBinOpKind::Sub => IRBinOpKind::Sub,
+        t2::IRBinOpKind::Mul => IRBinOpKind::Mul,
         t2::IRBinOpKind::Shl => IRBinOpKind::Shl,
+        t2::IRBinOpKind::Shr => IRBinOpKind::Shr,
+        t2::IRBinOpKind::BitOr => IRBinOpKind::BitOr,
         t2::IRBinOpKind::And => IRBinOpKind::And,
         t2::IRBinOpKind::Or => IRBinOpKind::Or,
         t2::IRBinOpKind::Eq => IRBinOpKind::Eq,
@@ -71,29 +74,20 @@ fn expression(expr: &t2::IRExpr) -> IRExpr {
             size: *size,
         },
         t2::IRExpr::Argument(ordinal) => IRExpr::Argument(*ordinal),
-        t2::IRExpr::ExtractBytes {
+        t2::IRExpr::Convert {
             value,
-            offset,
-            size,
-        } => IRExpr::ExtractBytes {
+            source,
+            target,
+        } => IRExpr::Convert {
             value: Box::new(expression(value)),
-            offset: *offset,
-            size: *size,
-        },
-        t2::IRExpr::ZeroExtend { value, size } => IRExpr::ZeroExtend {
-            value: Box::new(expression(value)),
-            size: *size,
-        },
-        t2::IRExpr::ReplaceBytes {
-            original,
-            value,
-            offset,
-            size,
-        } => IRExpr::ReplaceBytes {
-            original: Box::new(expression(original)),
-            value: Box::new(expression(value)),
-            offset: *offset,
-            size: *size,
+            source: self::ir::IntegerType {
+                size: source.size,
+                signed: source.signed,
+            },
+            target: self::ir::IntegerType {
+                size: target.size,
+                signed: target.signed,
+            },
         },
         t2::IRExpr::CU8(value) => IRExpr::CU8(*value),
         t2::IRExpr::CU32(value) => IRExpr::CU32(*value),
@@ -165,6 +159,7 @@ pub fn lift(source: &t2::Program) -> Program {
             })
             .collect(),
     };
+    let program = inline_variables::tr(program);
     let program = inline_trivial_loops::tr(program);
     let program = inline_variables::tr(program);
     return_slots::tr(inline_functions::tr(program))

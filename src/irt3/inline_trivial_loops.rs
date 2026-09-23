@@ -122,16 +122,9 @@ fn rewrite_expression(
             rewrite_expression(lhs, aliases, native_states);
             rewrite_expression(rhs, aliases, native_states);
         }
-        IRExpr::ReplaceBytes {
-            original, value, ..
-        } => {
-            rewrite_expression(original, aliases, native_states);
-            rewrite_expression(value, aliases, native_states);
-        }
         IRExpr::Deref(inner)
         | IRExpr::CastUnknownPtr { address: inner, .. }
-        | IRExpr::ExtractBytes { value: inner, .. }
-        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::Convert { value: inner, .. }
         | IRExpr::Not(inner) => rewrite_expression(inner, aliases, native_states),
         IRExpr::CU8(_) | IRExpr::CU32(_) | IRExpr::CU64(_) | IRExpr::Bool(_) => {}
     }
@@ -347,16 +340,9 @@ fn max_variable_id(function: &SyntheticFunction) -> Option<usize> {
                 expression_max(lhs, maximum);
                 expression_max(rhs, maximum);
             }
-            IRExpr::ReplaceBytes {
-                original, value, ..
-            } => {
-                expression_max(original, maximum);
-                expression_max(value, maximum);
-            }
             IRExpr::Deref(inner)
             | IRExpr::CastUnknownPtr { address: inner, .. }
-            | IRExpr::ExtractBytes { value: inner, .. }
-            | IRExpr::ZeroExtend { value: inner, .. }
+            | IRExpr::Convert { value: inner, .. }
             | IRExpr::Not(inner) => expression_max(inner, maximum),
             IRExpr::Argument(_)
             | IRExpr::CU8(_)

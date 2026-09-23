@@ -28,6 +28,7 @@ canonical sums. The normalizer applies these small algebraic rules:
 - Convert subtraction into a negative coefficient.
 - Flatten addition and subtraction at the same width.
 - Convert constant left shifts smaller than the width into scaling.
+- Convert multiplication by a constant into scaling at the operand width.
 - Combine equal terms, remove zero coefficients, and fold constants modulo
   `2^bits`.
 - Normalize negated comparisons.
@@ -36,7 +37,7 @@ For example, `x - s`, `x + (0 - s)`, and `(x + a) - (s + a)` produce the same
 sum when their operands have the same integer width. This provides algebraic
 matching without enumerating expression trees for each operation recognizer.
 
-Unknown widths, pointers, byte extraction/insertion, memory reads, and operations
+Unknown widths, pointers, numeric conversions, memory reads, and operations
 that can trap remain opaque where a rewrite is unsupported. The original Tier 6
 expression is retained. Arithmetic normalization never crosses a load or invents
 memory equivalence. Constants use the operation width when paired with a known

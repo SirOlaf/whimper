@@ -55,7 +55,11 @@ fn read_expr(
             read_expr(lhs, defined, required);
             read_expr(rhs, defined, required);
         }
-        IRExpr::Deref(inner) | IRExpr::Not(inner) => read_expr(inner, defined, required),
+        IRExpr::Deref { address: inner, .. }
+        | IRExpr::ExtractBytes { value: inner, .. }
+        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::SignExtend { value: inner, .. }
+        | IRExpr::Not(inner) => read_expr(inner, defined, required),
         IRExpr::Flag(_)
         | IRExpr::CU8(_)
         | IRExpr::CU32(_)
@@ -112,7 +116,8 @@ fn read_inst(
                 require_bytes(parameter.register, 0, parameter.size, defined, required);
             }
         }
-        IRInst::ClearFlags { .. }
+        IRInst::InvalidateFlags { .. }
+        | IRInst::ClearFlags { .. }
         | IRInst::Return(None)
         | IRInst::DeclareVariable { .. }
         | IRInst::End => {}

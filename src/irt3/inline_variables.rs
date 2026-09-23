@@ -31,16 +31,9 @@ fn expression_accesses(expr: &IRExpr, accesses: &mut Vec<Access>) {
             expression_accesses(lhs, accesses);
             expression_accesses(rhs, accesses);
         }
-        IRExpr::ReplaceBytes {
-            original, value, ..
-        } => {
-            expression_accesses(original, accesses);
-            expression_accesses(value, accesses);
-        }
         IRExpr::Deref(expr)
         | IRExpr::CastUnknownPtr { address: expr, .. }
-        | IRExpr::ExtractBytes { value: expr, .. }
-        | IRExpr::ZeroExtend { value: expr, .. }
+        | IRExpr::Convert { value: expr, .. }
         | IRExpr::Not(expr) => expression_accesses(expr, accesses),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)
@@ -122,15 +115,8 @@ fn input_reads(expr: &IRExpr, variables: &mut HashSet<VariableId>, memory: &mut 
             input_reads(lhs, variables, memory);
             input_reads(rhs, variables, memory);
         }
-        IRExpr::ReplaceBytes {
-            original, value, ..
-        } => {
-            input_reads(original, variables, memory);
-            input_reads(value, variables, memory);
-        }
         IRExpr::CastUnknownPtr { address, .. }
-        | IRExpr::ExtractBytes { value: address, .. }
-        | IRExpr::ZeroExtend { value: address, .. }
+        | IRExpr::Convert { value: address, .. }
         | IRExpr::Not(address) => input_reads(address, variables, memory),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)
@@ -226,7 +212,15 @@ fn candidate(function: &SyntheticFunction) -> Option<(VariableId, usize, usize, 
         input_reads(&value, &mut inputs, &mut reads_memory);
         // A use in an If condition precedes its arms. A use inside an arm
         // may follow writes in that arm, so include those as possible barriers.
-        let end = if matches!(function.body[use_index].1, IRInst::If { .. }) && !condition_use {
+        let in_arm = matches!(function.body[use_index].1, IRInst::If { .. }) && !condition_use;
+        let in_loop = matches!(function.body[use_index].1, IRInst::Loop { .. });
+        // A snapshot load must not become conditional or repeat in a loop.
+        // Pure expressions can move only if the entire region preserves their
+        // inputs, including writes on later loop iterations.
+        if reads_memory && (in_arm || in_loop) {
+            continue;
+        }
+        let end = if in_arm || in_loop {
             use_index + 1
         } else {
             use_index
@@ -251,18 +245,9 @@ fn replace_expression(expr: &mut IRExpr, variable: VariableId, value: &IRExpr) -
         IRExpr::BinOp { lhs, rhs, .. } => {
             replace_expression(lhs, variable, value) | replace_expression(rhs, variable, value)
         }
-        IRExpr::ReplaceBytes {
-            original,
-            value: replaced,
-            ..
-        } => {
-            replace_expression(original, variable, value)
-                | replace_expression(replaced, variable, value)
-        }
         IRExpr::Deref(inner)
         | IRExpr::CastUnknownPtr { address: inner, .. }
-        | IRExpr::ExtractBytes { value: inner, .. }
-        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::Convert { value: inner, .. }
         | IRExpr::Not(inner) => replace_expression(inner, variable, value),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)

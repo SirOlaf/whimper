@@ -180,6 +180,14 @@ impl Context {
                     match kind {
                         IRBinOpKind::Add => return sum(bits, [(left, 1), (right, 1)]),
                         IRBinOpKind::Sub => return sum(bits, [(left, 1), (right, u64::MAX)]),
+                        IRBinOpKind::Mul => {
+                            if let Kind::Constant(factor) = right.kind {
+                                return sum(bits, [(left, factor)]);
+                            }
+                            if let Kind::Constant(factor) = left.kind {
+                                return sum(bits, [(right, factor)]);
+                            }
+                        }
                         IRBinOpKind::Shl => {
                             if let Kind::Constant(shift) = right.kind
                                 && shift < bits as u64
@@ -200,9 +208,7 @@ impl Context {
                 }
             }
             IRExpr::Not(inner) if repeatable(expr) => self.with_bindings(inner, bindings).negated(),
-            IRExpr::ExtractBytes { size, .. } | IRExpr::ZeroExtend { size, .. } => {
-                atom(access_bits(*size))
-            }
+            IRExpr::Convert { target, .. } => atom(access_bits(target.size)),
             IRExpr::Deref(address) => {
                 let bits = if let IRExpr::MemoryAddress { size, .. } = address.as_ref() {
                     size.and_then(access_bits)

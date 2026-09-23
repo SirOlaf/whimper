@@ -221,18 +221,9 @@ fn replace_expression(expr: &mut IRExpr, target: VariableId, value: &IRExpr) {
             replace_expression(lhs, target, value);
             replace_expression(rhs, target, value);
         }
-        IRExpr::ReplaceBytes {
-            original,
-            value: replacement,
-            ..
-        } => {
-            replace_expression(original, target, value);
-            replace_expression(replacement, target, value);
-        }
         IRExpr::Deref(inner)
         | IRExpr::CastUnknownPtr { address: inner, .. }
-        | IRExpr::ExtractBytes { value: inner, .. }
-        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::Convert { value: inner, .. }
         | IRExpr::Not(inner) => replace_expression(inner, target, value),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)
@@ -353,12 +344,8 @@ fn effect_free(expr: &IRExpr) -> bool {
     match expr {
         IRExpr::Deref(_) => false,
         IRExpr::BinOp { lhs, rhs, .. } => effect_free(lhs) && effect_free(rhs),
-        IRExpr::ReplaceBytes {
-            original, value, ..
-        } => effect_free(original) && effect_free(value),
         IRExpr::CastUnknownPtr { address, .. }
-        | IRExpr::ExtractBytes { value: address, .. }
-        | IRExpr::ZeroExtend { value: address, .. }
+        | IRExpr::Convert { value: address, .. }
         | IRExpr::Not(address) => effect_free(address),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)
@@ -423,10 +410,7 @@ fn value_has_width(
             &**address,
             IRExpr::CastUnknownPtr { size: Some(read_size), .. } if *read_size == size
         ),
-        (IRExpr::ExtractBytes { size: result, .. }, VariableType::Unknown(Some(size)))
-        | (IRExpr::ZeroExtend { size: result, .. }, VariableType::Unknown(Some(size))) => {
-            *result == size
-        }
+        (IRExpr::Convert { target, .. }, VariableType::Unknown(Some(size))) => target.size == size,
         (IRExpr::CU8(_), VariableType::Unknown(Some(1)))
         | (IRExpr::CU32(_), VariableType::Unknown(Some(4)))
         | (IRExpr::CU64(_), VariableType::Unknown(Some(8)))

@@ -48,11 +48,15 @@ pub enum VariableType {
     Bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IRBinOpKind {
     Add,
     Sub,
+    Mul,
     Shl,
+    /// Logical right shift, with the width of the left operand.
+    Shr,
+    BitOr,
     And,
     Or,
     Eq,
@@ -60,7 +64,25 @@ pub enum IRBinOpKind {
     UnsignedLt,
 }
 
-#[derive(Debug, Clone)]
+/// An integer interpretation, independent of a machine register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntegerType {
+    pub size: usize,
+    pub signed: bool,
+}
+
+impl std::fmt::Display for IntegerType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}{}",
+            if self.signed { "i" } else { "u" },
+            self.size * 8
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IRExpr {
     BinOp {
         kind: IRBinOpKind,
@@ -74,20 +96,12 @@ pub enum IRExpr {
         size: Option<usize>,
     },
     Argument(usize),
-    ExtractBytes {
+    /// Numeric conversion: interpret the input using `source`, then convert
+    /// to `target`, truncating modulo its width. No register alias semantics.
+    Convert {
         value: Box<IRExpr>,
-        offset: usize,
-        size: usize,
-    },
-    ZeroExtend {
-        value: Box<IRExpr>,
-        size: usize,
-    },
-    ReplaceBytes {
-        original: Box<IRExpr>,
-        value: Box<IRExpr>,
-        offset: usize,
-        size: usize,
+        source: IntegerType,
+        target: IntegerType,
     },
     CU8(u8),
     CU32(u32),

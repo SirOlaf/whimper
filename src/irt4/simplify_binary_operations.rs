@@ -10,12 +10,8 @@ fn effect_free(expr: &IRExpr) -> bool {
     match expr {
         IRExpr::Deref(_) => false,
         IRExpr::BinOp { lhs, rhs, .. } => effect_free(lhs) && effect_free(rhs),
-        IRExpr::ReplaceBytes {
-            original, value, ..
-        } => effect_free(original) && effect_free(value),
         IRExpr::CastUnknownPtr { address, .. }
-        | IRExpr::ExtractBytes { value: address, .. }
-        | IRExpr::ZeroExtend { value: address, .. }
+        | IRExpr::Convert { value: address, .. }
         | IRExpr::Not(address) => effect_free(address),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)
@@ -48,12 +44,6 @@ fn simplify_expression(expr: &mut IRExpr) {
                 *expr = if keep_lhs { *lhs } else { *rhs };
             }
         }
-        IRExpr::ReplaceBytes {
-            original, value, ..
-        } => {
-            simplify_expression(original);
-            simplify_expression(value);
-        }
         IRExpr::Not(inner) => {
             simplify_expression(inner);
             match inner.as_mut() {
@@ -80,8 +70,7 @@ fn simplify_expression(expr: &mut IRExpr) {
         }
         IRExpr::Deref(inner)
         | IRExpr::CastUnknownPtr { address: inner, .. }
-        | IRExpr::ExtractBytes { value: inner, .. }
-        | IRExpr::ZeroExtend { value: inner, .. } => simplify_expression(inner),
+        | IRExpr::Convert { value: inner, .. } => simplify_expression(inner),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)
         | IRExpr::CU32(_)

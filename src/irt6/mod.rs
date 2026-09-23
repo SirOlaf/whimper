@@ -54,7 +54,10 @@ fn bin_op(kind: &t5::IRBinOpKind) -> IRBinOpKind {
     match kind {
         t5::IRBinOpKind::Add => IRBinOpKind::Add,
         t5::IRBinOpKind::Sub => IRBinOpKind::Sub,
+        t5::IRBinOpKind::Mul => IRBinOpKind::Mul,
         t5::IRBinOpKind::Shl => IRBinOpKind::Shl,
+        t5::IRBinOpKind::Shr => IRBinOpKind::Shr,
+        t5::IRBinOpKind::BitOr => IRBinOpKind::BitOr,
         t5::IRBinOpKind::And => IRBinOpKind::And,
         t5::IRBinOpKind::Or => IRBinOpKind::Or,
         t5::IRBinOpKind::Eq => IRBinOpKind::Eq,
@@ -78,29 +81,20 @@ fn expression(expr: &t5::IRExpr) -> IRExpr {
             size: *size,
         },
         t5::IRExpr::Argument(ordinal) => IRExpr::Argument(*ordinal),
-        t5::IRExpr::ExtractBytes {
+        t5::IRExpr::Convert {
             value,
-            offset,
-            size,
-        } => IRExpr::ExtractBytes {
+            source,
+            target,
+        } => IRExpr::Convert {
             value: Box::new(expression(value)),
-            offset: *offset,
-            size: *size,
-        },
-        t5::IRExpr::ZeroExtend { value, size } => IRExpr::ZeroExtend {
-            value: Box::new(expression(value)),
-            size: *size,
-        },
-        t5::IRExpr::ReplaceBytes {
-            original,
-            value,
-            offset,
-            size,
-        } => IRExpr::ReplaceBytes {
-            original: Box::new(expression(original)),
-            value: Box::new(expression(value)),
-            offset: *offset,
-            size: *size,
+            source: self::ir::IntegerType {
+                size: source.size,
+                signed: source.signed,
+            },
+            target: self::ir::IntegerType {
+                size: target.size,
+                signed: target.signed,
+            },
         },
         t5::IRExpr::CU8(value) => IRExpr::CU8(*value),
         t5::IRExpr::CU32(value) => IRExpr::CU32(*value),

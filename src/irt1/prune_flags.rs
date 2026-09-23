@@ -11,7 +11,11 @@ fn read_expr(expr: &IRExpr, live: &mut HashSet<NativeFlag>) {
             read_expr(lhs, live);
             read_expr(rhs, live);
         }
-        IRExpr::Deref(inner) | IRExpr::Not(inner) => read_expr(inner, live),
+        IRExpr::Deref { address: inner, .. }
+        | IRExpr::ExtractBytes { value: inner, .. }
+        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::SignExtend { value: inner, .. }
+        | IRExpr::Not(inner) => read_expr(inner, live),
         IRExpr::Reg(_)
         | IRExpr::CU8(_)
         | IRExpr::CU32(_)
@@ -38,7 +42,9 @@ fn read_inst(instr: &IRInst, live: &mut HashSet<NativeFlag>) {
             read_inst(then_branch, live);
             read_inst(else_branch, live);
         }
-        IRInst::SetFlagsFrom { .. } | IRInst::ClearFlags { .. } => {
+        IRInst::SetFlagsFrom { .. }
+        | IRInst::ClearFlags { .. }
+        | IRInst::InvalidateFlags { .. } => {
             unreachable!("flag writes are handled by the backward pass")
         }
         IRInst::Return(None)
@@ -53,6 +59,27 @@ fn prune_function(function: &mut SyntheticFunction) {
     let mut kept = Vec::new();
     for (offset, instr) in std::mem::take(&mut function.body).into_iter().rev() {
         match instr {
+            IRInst::Assign {
+                dest: IRExpr::Flag(flag),
+                src,
+            } => {
+                if live.remove(&flag) {
+                    read_expr(&src, &mut live);
+                    kept.push((
+                        offset,
+                        IRInst::Assign {
+                            dest: IRExpr::Flag(flag),
+                            src,
+                        },
+                    ));
+                }
+            }
+            IRInst::InvalidateFlags { flags } => {
+                assert!(
+                    flags.is_disjoint(&live),
+                    "undefined flags used at 0x{offset:x}"
+                );
+            }
             IRInst::SetFlagsFrom { flags, expr } => {
                 let needed = flags.intersection(&live).cloned().collect::<HashSet<_>>();
                 live.retain(|flag| !flags.contains(flag));
@@ -118,14 +145,20 @@ fn require_lowered_expr(expr: &IRExpr, function: usize, offset: usize) {
             require_lowered_expr(lhs, function, offset);
             require_lowered_expr(rhs, function, offset);
         }
-        IRExpr::Deref(inner) | IRExpr::Not(inner) => require_lowered_expr(inner, function, offset),
+        IRExpr::Deref { address: inner, .. }
+        | IRExpr::ExtractBytes { value: inner, .. }
+        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::SignExtend { value: inner, .. }
+        | IRExpr::Not(inner) => require_lowered_expr(inner, function, offset),
         _ => {}
     }
 }
 
 fn require_lowered_inst(instr: &IRInst, function: usize, offset: usize) {
     match instr {
-        IRInst::SetFlagsFrom { flags, .. } | IRInst::ClearFlags { flags } => panic!(
+        IRInst::SetFlagsFrom { flags, .. }
+        | IRInst::ClearFlags { flags }
+        | IRInst::InvalidateFlags { flags } => panic!(
             "tier 1 left native flag writes {flags:?} in fn_{function} at 0x{offset:x}; lower them before tier 2"
         ),
         IRInst::Assign { dest, src } => {

@@ -21,16 +21,9 @@ fn visit_expression(expr: &IRExpr, visit: &mut impl FnMut(VariableId)) {
             visit_expression(lhs, visit);
             visit_expression(rhs, visit);
         }
-        IRExpr::ReplaceBytes {
-            original, value, ..
-        } => {
-            visit_expression(original, visit);
-            visit_expression(value, visit);
-        }
         IRExpr::Deref(inner)
         | IRExpr::CastUnknownPtr { address: inner, .. }
-        | IRExpr::ExtractBytes { value: inner, .. }
-        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::Convert { value: inner, .. }
         | IRExpr::Not(inner) => visit_expression(inner, visit),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)
@@ -156,12 +149,8 @@ fn effect_free(expr: &IRExpr) -> bool {
     match expr {
         IRExpr::Deref(_) => false,
         IRExpr::BinOp { lhs, rhs, .. } => effect_free(lhs) && effect_free(rhs),
-        IRExpr::ReplaceBytes {
-            original, value, ..
-        } => effect_free(original) && effect_free(value),
         IRExpr::CastUnknownPtr { address, .. }
-        | IRExpr::ExtractBytes { value: address, .. }
-        | IRExpr::ZeroExtend { value: address, .. }
+        | IRExpr::Convert { value: address, .. }
         | IRExpr::Not(address) => effect_free(address),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)

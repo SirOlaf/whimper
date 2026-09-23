@@ -2,6 +2,7 @@ pub mod ir;
 pub mod prune_flags;
 pub mod register_parameters;
 pub mod render;
+mod return_registers;
 
 use std::collections::{HashMap, HashSet};
 
@@ -37,6 +38,7 @@ fn lift_expr(expr: IRT0Expr) -> IRExpr {
             kind: match kind {
                 IRT0BinOpKind::Add => IRBinOpKind::Add,
                 IRT0BinOpKind::Sub => IRBinOpKind::Sub,
+                IRT0BinOpKind::Mul => IRBinOpKind::Mul,
                 IRT0BinOpKind::Shl => IRBinOpKind::Shl,
                 IRT0BinOpKind::And => IRBinOpKind::And,
                 IRT0BinOpKind::Or => IRBinOpKind::Or,
@@ -46,7 +48,27 @@ fn lift_expr(expr: IRT0Expr) -> IRExpr {
             lhs: Box::new(lift_expr(*lhs)),
             rhs: Box::new(lift_expr(*rhs)),
         },
-        IRT0Expr::Deref(inner) => IRExpr::Deref(Box::new(lift_expr(*inner))),
+        IRT0Expr::Deref { address, size } => IRExpr::Deref {
+            address: Box::new(lift_expr(*address)),
+            size,
+        },
+        IRT0Expr::ExtractBytes {
+            value,
+            offset,
+            size,
+        } => IRExpr::ExtractBytes {
+            value: Box::new(lift_expr(*value)),
+            offset,
+            size,
+        },
+        IRT0Expr::ZeroExtend { value, size } => IRExpr::ZeroExtend {
+            value: Box::new(lift_expr(*value)),
+            size,
+        },
+        IRT0Expr::SignExtend { value, size } => IRExpr::SignExtend {
+            value: Box::new(lift_expr(*value)),
+            size,
+        },
         IRT0Expr::Reg(reg) => IRExpr::Reg(reg),
         IRT0Expr::Flag(flag) => IRExpr::Flag(lift_flag(flag)),
         IRT0Expr::CU8(value) => IRExpr::CU8(value),
@@ -198,6 +220,12 @@ impl SyntheticFunctionBuilder<'_> {
                         },
                     ));
                 }
+                IRT0Inst::InvalidateFlags(flags) => body.push((
+                    offset,
+                    IRInst::InvalidateFlags {
+                        flags: flags.into_iter().map(lift_flag).collect(),
+                    },
+                )),
             }
             index += 1;
         }
@@ -214,7 +242,11 @@ fn condition_flags(expr: &IRExpr, flags: &mut Vec<NativeFlag>) {
             condition_flags(lhs, flags);
             condition_flags(rhs, flags);
         }
-        IRExpr::Deref(inner) | IRExpr::Not(inner) => condition_flags(inner, flags),
+        IRExpr::Deref { address: inner, .. }
+        | IRExpr::ExtractBytes { value: inner, .. }
+        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::SignExtend { value: inner, .. }
+        | IRExpr::Not(inner) => condition_flags(inner, flags),
         _ => {}
     }
 }
@@ -317,9 +349,13 @@ fn lift_conditions(
     for flag in flags {
         // The branch is terminal, so the last write in this body is its source.
         let Some(index) = body.iter().rposition(|(_, instr)| match instr {
-            IRInst::SetFlagsFrom { flags, .. } | IRInst::ClearFlags { flags } => {
-                flags.contains(&flag)
-            }
+            IRInst::SetFlagsFrom { flags, .. }
+            | IRInst::ClearFlags { flags }
+            | IRInst::InvalidateFlags { flags } => flags.contains(&flag),
+            IRInst::Assign {
+                dest: IRExpr::Flag(written),
+                ..
+            } => written == &flag,
             _ => false,
         }) else {
             unimplemented!(
@@ -351,6 +387,36 @@ fn lift_conditions(
 
     for (index, (offset, instr)) in body.into_iter().enumerate() {
         match instr {
+            IRInst::Assign {
+                dest: IRExpr::Flag(flag),
+                src,
+            } => {
+                if let Some(assignments) = writes.get(&index) {
+                    for (_, variable) in assignments {
+                        lifted.push((
+                            offset,
+                            IRInst::AssignVariable {
+                                variable: *variable,
+                                value: src.clone(),
+                            },
+                        ));
+                    }
+                }
+                lifted.push((
+                    offset,
+                    IRInst::Assign {
+                        dest: IRExpr::Flag(flag),
+                        src,
+                    },
+                ));
+            }
+            IRInst::InvalidateFlags { flags } => {
+                assert!(
+                    !writes.contains_key(&index),
+                    "undefined flags {flags:?} used at 0x{offset:x}"
+                );
+                lifted.push((offset, IRInst::InvalidateFlags { flags }));
+            }
             IRInst::SetFlagsFrom { flags, expr } => {
                 if let Some(assignments) = writes.get(&index) {
                     for (flag, variable) in assignments {
@@ -433,9 +499,10 @@ pub fn lift(source: &IRT0Program) -> Program {
         let body = std::mem::take(&mut function.body);
         function.body = lift_conditions(SyntheticFunctionId { id }, body);
     }
-    let program = prune_flags::tr(Program {
+    let mut program = prune_flags::tr(Program {
         entry: Some(entry),
         functions: builder.functions,
     });
+    return_registers::run(&mut program);
     register_parameters::tr(program)
 }

@@ -69,6 +69,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
             let operator = match kind {
                 IRBinOpKind::Add => Some("+"),
                 IRBinOpKind::Sub => Some("-"),
+                IRBinOpKind::Mul => Some("*"),
                 IRBinOpKind::Shl => Some("<<"),
                 IRBinOpKind::And => Some("&"),
                 IRBinOpKind::Or => Some("||"),
@@ -89,7 +90,18 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
                 ),
             }
         }
-        IRExpr::Deref(address) => format!("memory[{}]", expression(address, 0)),
+        IRExpr::Deref { address, size } => format!("load<{size}>({})", expression(address, 0)),
+        IRExpr::ExtractBytes {
+            value,
+            offset,
+            size,
+        } => format!("extractBytes<{offset}, {size}>({})", expression(value, 0)),
+        IRExpr::ZeroExtend { value, size } => {
+            format!("zeroExtend<{size}>({})", expression(value, 0))
+        }
+        IRExpr::SignExtend { value, size } => {
+            format!("signExtend<{size}>({})", expression(value, 0))
+        }
         IRExpr::Reg(reg) => format!("{reg:?}"),
         IRExpr::Flag(flag) => format!("flags.{flag:?}"),
         IRExpr::CU8(value) => format!("0x{value:x}"),
@@ -129,6 +141,9 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
         }
         IRInst::ClearFlags { flags: set } => {
             writeln!(output, "{padding}clearFlags([{}]);", flags(set)).unwrap();
+        }
+        IRInst::InvalidateFlags { flags: set } => {
+            writeln!(output, "{padding}invalidateFlags([{}]);", flags(set)).unwrap();
         }
         IRInst::Return(Some(value)) => {
             writeln!(output, "{padding}return {};", expression(value, 0)).unwrap();

@@ -23,7 +23,7 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 1,
         IRExpr::BinOp {
-            kind: IRBinOpKind::And,
+            kind: IRBinOpKind::And | IRBinOpKind::BitOr,
             ..
         } => 2,
         IRExpr::BinOp {
@@ -31,7 +31,7 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 3,
         IRExpr::BinOp {
-            kind: IRBinOpKind::Shl,
+            kind: IRBinOpKind::Shl | IRBinOpKind::Shr,
             ..
         } => 4,
         IRExpr::BinOp {
@@ -59,7 +59,10 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
             let operator = match kind {
                 IRBinOpKind::Add => Some("+"),
                 IRBinOpKind::Sub => Some("-"),
+                IRBinOpKind::Mul => Some("*"),
                 IRBinOpKind::Shl => Some("<<"),
+                IRBinOpKind::Shr => Some(">>>"),
+                IRBinOpKind::BitOr => Some("|"),
                 IRBinOpKind::And => Some("&"),
                 IRBinOpKind::Or => Some("||"),
                 IRBinOpKind::Eq => Some("==="),
@@ -85,24 +88,13 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
             None => format!("(Unknown*)({})", expression(address, 0)),
         },
         IRExpr::Argument(ordinal) => format!("arg{ordinal}"),
-        IRExpr::ExtractBytes {
+        IRExpr::Convert {
             value,
-            offset,
-            size,
-        } => format!("extractBytes<{offset}, {size}>({})", expression(value, 0)),
-        IRExpr::ZeroExtend { value, size } => {
-            format!("zeroExtend<{size}>({})", expression(value, 0))
+            source,
+            target,
+        } => {
+            format!("{target}({source}({}))", expression(value, 0))
         }
-        IRExpr::ReplaceBytes {
-            original,
-            value,
-            offset,
-            size,
-        } => format!(
-            "replaceBytes<{offset}, {size}>({}, {})",
-            expression(original, 0),
-            expression(value, 0)
-        ),
         IRExpr::CU8(value) => format!("0x{value:x}"),
         IRExpr::CU32(value) => format!("0x{value:x}"),
         IRExpr::CU64(value) => format!("0x{value:x}"),

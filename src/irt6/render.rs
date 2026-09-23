@@ -68,6 +68,36 @@ impl<'a> RenderTypes<'a> {
         }
     }
 
+    fn integer_type(&self, expr: &IRExpr) -> Option<super::ir::IntegerType> {
+        use super::ir::IntegerType;
+        match expr {
+            IRExpr::Convert { target, .. } => Some(*target),
+            IRExpr::CU8(_) => Some(IntegerType {
+                size: 1,
+                signed: false,
+            }),
+            IRExpr::CU32(_) => Some(IntegerType {
+                size: 4,
+                signed: false,
+            }),
+            IRExpr::CU64(_) => Some(IntegerType {
+                size: 8,
+                signed: false,
+            }),
+            _ => match self.direct_type(expr) {
+                Some(VariableType::Integer(bits)) => Some(IntegerType {
+                    size: bits / 8,
+                    signed: true,
+                }),
+                Some(VariableType::UnsignedInteger(bits)) => Some(IntegerType {
+                    size: bits / 8,
+                    signed: false,
+                }),
+                _ => None,
+            },
+        }
+    }
+
     fn integer_offset(&self, expr: &IRExpr) -> bool {
         if matches!(
             self.direct_type(expr),
@@ -76,7 +106,7 @@ impl<'a> RenderTypes<'a> {
             return true;
         }
         match expr {
-            IRExpr::CU8(_) | IRExpr::CU32(_) | IRExpr::CU64(_) => true,
+            IRExpr::CU8(_) | IRExpr::CU32(_) | IRExpr::CU64(_) | IRExpr::Convert { .. } => true,
             IRExpr::BinOp {
                 kind:
                     IRBinOpKind::Add | IRBinOpKind::Sub | IRBinOpKind::UnsignedMod | IRBinOpKind::Shl,
@@ -169,7 +199,7 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 2,
         IRExpr::BinOp {
-            kind: IRBinOpKind::And,
+            kind: IRBinOpKind::And | IRBinOpKind::BitOr,
             ..
         } => 3,
         IRExpr::BinOp {
@@ -185,11 +215,11 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 5,
         IRExpr::BinOp {
-            kind: IRBinOpKind::Shl,
+            kind: IRBinOpKind::Shl | IRBinOpKind::Shr,
             ..
         } => 6,
         IRExpr::BinOp {
-            kind: IRBinOpKind::UnsignedMod,
+            kind: IRBinOpKind::Mul | IRBinOpKind::UnsignedMod,
             ..
         } => 8,
         IRExpr::BinOp { .. } => 7,
@@ -202,8 +232,11 @@ fn binary_operator(kind: &IRBinOpKind) -> &'static str {
     match kind {
         IRBinOpKind::Add => "+",
         IRBinOpKind::Sub => "-",
+        IRBinOpKind::Mul => "*",
         IRBinOpKind::UnsignedMod => "u%",
         IRBinOpKind::Shl => "<<",
+        IRBinOpKind::Shr => ">>>",
+        IRBinOpKind::BitOr => "|",
         IRBinOpKind::And => "&",
         IRBinOpKind::LogicalAnd => "&&",
         IRBinOpKind::Or => "||",
@@ -247,27 +280,18 @@ fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> Stri
             format!("(Unknown*)({})", expression(address, 0, types))
         }
         IRExpr::Argument(ordinal) => format!("arg{ordinal}"),
-        IRExpr::ExtractBytes {
+        IRExpr::Convert {
             value,
-            offset,
-            size,
-        } => format!(
-            "extractBytes<{offset}, {size}>({})",
-            expression(value, 0, types)
-        ),
-        IRExpr::ZeroExtend { value, size } => {
-            format!("zeroExtend<{size}>({})", expression(value, 0, types))
+            source,
+            target,
+        } => {
+            let input = expression(value, 0, types);
+            if types.integer_type(value) == Some(*source) || target.size <= source.size {
+                format!("{target}({input})")
+            } else {
+                format!("{target}({source}({input}))")
+            }
         }
-        IRExpr::ReplaceBytes {
-            original,
-            value,
-            offset,
-            size,
-        } => format!(
-            "replaceBytes<{offset}, {size}>({}, {})",
-            expression(original, 0, types),
-            expression(value, 0, types)
-        ),
         IRExpr::CU8(value) => format!("0x{value:x}"),
         IRExpr::CU32(value) => format!("0x{value:x}"),
         IRExpr::CU64(value) => format!("0x{value:x}"),

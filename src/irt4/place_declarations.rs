@@ -31,13 +31,9 @@ fn expression_uses(expr: &IRExpr, variable: VariableId) -> bool {
         IRExpr::BinOp { lhs, rhs, .. } => {
             expression_uses(lhs, variable) || expression_uses(rhs, variable)
         }
-        IRExpr::ReplaceBytes {
-            original, value, ..
-        } => expression_uses(original, variable) || expression_uses(value, variable),
         IRExpr::Deref(inner)
         | IRExpr::CastUnknownPtr { address: inner, .. }
-        | IRExpr::ExtractBytes { value: inner, .. }
-        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::Convert { value: inner, .. }
         | IRExpr::Not(inner) => expression_uses(inner, variable),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)

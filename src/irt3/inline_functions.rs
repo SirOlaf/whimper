@@ -184,16 +184,9 @@ fn visit_expression(expr: &mut IRExpr, visit: &mut impl FnMut(&mut IRExpr)) {
             visit_expression(lhs, visit);
             visit_expression(rhs, visit);
         }
-        IRExpr::ReplaceBytes {
-            original, value, ..
-        } => {
-            visit_expression(original, visit);
-            visit_expression(value, visit);
-        }
         IRExpr::Deref(inner)
         | IRExpr::CastUnknownPtr { address: inner, .. }
-        | IRExpr::ExtractBytes { value: inner, .. }
-        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::Convert { value: inner, .. }
         | IRExpr::Not(inner) => visit_expression(inner, visit),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)

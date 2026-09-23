@@ -20,6 +20,7 @@ pub(super) struct Offset {
 pub(super) struct Operation {
     pub dependencies: HashSet<Offset>,
     pub write: Option<VariableId>,
+    pub constant_write: bool,
     pub offset: Option<Offset>,
     pub argument: Option<usize>,
 }
@@ -34,6 +35,8 @@ impl Operation {
 
 pub(super) struct Node {
     pub operation: Operation,
+    // Identity only, never dereferenced; valid until the instruction tree moves.
+    pub instruction: Option<usize>,
     pub successors: Vec<usize>,
 }
 
@@ -76,7 +79,10 @@ fn offset(expr: &IRExpr) -> Option<Offset> {
                 value.displacement = value.displacement.checked_sub(constant(rhs)?)?;
                 Some(value)
             }
-            IRBinOpKind::Shl
+            IRBinOpKind::Mul
+            | IRBinOpKind::Shl
+            | IRBinOpKind::Shr
+            | IRBinOpKind::BitOr
             | IRBinOpKind::And
             | IRBinOpKind::Or
             | IRBinOpKind::Eq
@@ -99,16 +105,9 @@ fn reads(expr: &IRExpr, result: &mut HashSet<Offset>) {
             reads(lhs, result);
             reads(rhs, result);
         }
-        IRExpr::ReplaceBytes {
-            original, value, ..
-        } => {
-            reads(original, result);
-            reads(value, result);
-        }
         IRExpr::Deref(inner)
         | IRExpr::CastUnknownPtr { address: inner, .. }
-        | IRExpr::ExtractBytes { value: inner, .. }
-        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::Convert { value: inner, .. }
         | IRExpr::Not(inner) => reads(inner, result),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)
@@ -126,6 +125,7 @@ fn operation(instr: &IRInst) -> Operation {
             reads(src, &mut op.dependencies);
             if let IRExpr::Variable(variable) = dest {
                 op.write = Some(*variable);
+                op.constant_write = super::fold_constants::is_constant(src);
                 op.offset = offset(src);
                 if let IRExpr::Argument(ordinal) = src {
                     op.argument = Some(*ordinal);
@@ -140,6 +140,7 @@ fn operation(instr: &IRInst) -> Operation {
         } => {
             reads(value, &mut op.dependencies);
             op.write = Some(*variable);
+            op.constant_write = super::fold_constants::is_constant(value);
             op.offset = offset(value);
             if let IRExpr::Argument(ordinal) = value {
                 op.argument = Some(*ordinal);
@@ -193,6 +194,7 @@ impl Builder {
     fn push(&mut self, operation: Operation, successors: Vec<usize>) -> usize {
         let id = self.nodes.len();
         self.nodes.push(Node {
+            instruction: None,
             operation,
             successors,
         });
@@ -212,7 +214,7 @@ impl Builder {
     }
 
     fn instruction(&mut self, instr: &IRInst, next: usize, loops: &[LoopTargets]) -> usize {
-        match instr {
+        let node = match instr {
             IRInst::If {
                 then_branch,
                 else_branch,
@@ -281,7 +283,9 @@ impl Builder {
                 self.push(operation(instr), Vec::new())
             }
             _ => self.push(operation(instr), vec![next]),
-        }
+        };
+        self.nodes[node].instruction = Some(instr as *const IRInst as usize);
+        node
     }
 }
 

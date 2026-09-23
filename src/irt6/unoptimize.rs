@@ -226,17 +226,9 @@ fn simplify_boolean_expression(expr: &mut IRExpr) -> bool {
             let right_changed = simplify_boolean_expression(rhs);
             left_changed || right_changed
         }
-        IRExpr::ReplaceBytes {
-            original, value, ..
-        } => {
-            let original_changed = simplify_boolean_expression(original);
-            let value_changed = simplify_boolean_expression(value);
-            original_changed || value_changed
-        }
         IRExpr::Deref(inner)
         | IRExpr::MemoryAddress { address: inner, .. }
-        | IRExpr::ExtractBytes { value: inner, .. }
-        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::Convert { value: inner, .. }
         | IRExpr::Not(inner) => simplify_boolean_expression(inner),
         IRExpr::Argument(_)
         | IRExpr::CU8(_)

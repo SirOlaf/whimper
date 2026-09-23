@@ -15,9 +15,9 @@ use std::{
 
 use iced_x86::{Decoder, DecoderOptions, Mnemonic};
 
-// Keep the existing example function as the default decompilation target.
+// The byte-string hash function is the default decompilation target.
 // --address (or --entry) selects another function in the loaded image.
-const EXAMPLE_ADDRESS: u64 = 0x140095be0;
+const EXAMPLE_ADDRESS: u64 = 0x14008d690;
 
 fn has_pe_signature(bytes: &[u8]) -> bool {
     if !bytes.starts_with(b"MZ") {
@@ -92,6 +92,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut use_entry = false;
     let mut list_sections = false;
     let mut read_request = None;
+    let mut tier = 6;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -105,6 +106,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                     address = Some(parsed);
                 } else {
                     length = Some(usize::try_from(parsed)?);
+                }
+                index += 2;
+            }
+            "--tier" => {
+                tier = number(args.get(index + 1).ok_or("missing value for --tier")?)?;
+                if !(1..=6).contains(&tier) {
+                    return Err("--tier must be between 1 and 6".into());
                 }
                 index += 2;
             }
@@ -182,13 +190,34 @@ fn run() -> Result<(), Box<dyn Error>> {
     if code.is_empty() {
         return Err("selected function is empty".into());
     }
+    let address_comments = args.iter().any(|arg| arg == "--address-comments");
     let irt0program = irt0::lift(code, usize::try_from(address)?);
 
     let irt1program = irt1::lift(&irt0program);
+    if tier == 1 {
+        print!("{}", irt1::render::render(&irt1program, address_comments));
+        return Ok(());
+    }
     let irt2program = irt2::lift(&irt1program);
+    if tier == 2 {
+        print!("{}", irt2::render::render(&irt2program, address_comments));
+        return Ok(());
+    }
     let irt3program = irt3::lift(&irt2program);
+    if tier == 3 {
+        print!("{}", irt3::render::render(&irt3program, address_comments));
+        return Ok(());
+    }
     let irt4program = irt4::lift(&irt3program);
+    if tier == 4 {
+        print!("{}", irt4::render::render(&irt4program, address_comments));
+        return Ok(());
+    }
     let irt5program = irt5::lift(&irt4program);
+    if tier == 5 {
+        print!("{}", irt5::render::render(&irt5program, address_comments));
+        return Ok(());
+    }
     let mut irt6program = irt6::lift(&irt5program);
     let report = if args.iter().any(|arg| arg == "--no-assumptions") {
         irt6::unoptimize::run_with_options(
@@ -203,7 +232,6 @@ fn run() -> Result<(), Box<dyn Error>> {
     if args.iter().any(|arg| arg == "--arithmetic") {
         print!("{}\n", report.render());
     }
-    let address_comments = args.iter().any(|arg| arg == "--address-comments");
     print!("{}", irt6::render::render(&irt6program, address_comments));
     Ok(())
 }

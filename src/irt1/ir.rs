@@ -54,6 +54,7 @@ pub enum VariableType {
 pub enum IRBinOpKind {
     Add,
     Sub,
+    Mul,
     Shl,
     And,
     Or,
@@ -69,7 +70,23 @@ pub enum IRExpr {
         lhs: Box<IRExpr>,
         rhs: Box<IRExpr>,
     },
-    Deref(Box<IRExpr>),
+    Deref {
+        address: Box<IRExpr>,
+        size: usize,
+    },
+    ExtractBytes {
+        value: Box<IRExpr>,
+        offset: usize,
+        size: usize,
+    },
+    ZeroExtend {
+        value: Box<IRExpr>,
+        size: usize,
+    },
+    SignExtend {
+        value: Box<IRExpr>,
+        size: usize,
+    },
     Reg(Register),
     Flag(NativeFlag),
     CU8(u8),
@@ -91,6 +108,9 @@ pub enum IRInst {
         expr: IRExpr,
     },
     ClearFlags {
+        flags: HashSet<NativeFlag>,
+    },
+    InvalidateFlags {
         flags: HashSet<NativeFlag>,
     },
     Return(Option<IRExpr>),

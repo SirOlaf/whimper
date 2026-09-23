@@ -59,6 +59,62 @@ fn constant_return(
     same_width.then(|| (*target, value.clone()))
 }
 
+/// A return immediately following an if needs no merge slot when both arms
+/// end by assigning that slot. Keep each arm's effects and return its value.
+fn joined_return(
+    conditional: &IRInst,
+    returning: &IRInst,
+    types: &HashMap<VariableId, VariableType>,
+) -> Option<(VariableId, IRInst)> {
+    let IRInst::Return(Some(IRExpr::Variable(target))) = returning else {
+        return None;
+    };
+    let IRInst::If {
+        condition,
+        then_branch,
+        else_branch,
+    } = conditional
+    else {
+        return None;
+    };
+    let ty = *types.get(target)?;
+    let branch = |body: &[IRInst]| -> Option<Vec<IRInst>> {
+        let value = match body.last()? {
+            IRInst::AssignVariable { variable, value } if variable == target => value,
+            IRInst::Assign {
+                dest: IRExpr::Variable(variable),
+                src,
+            } if variable == target => src,
+            _ => return None,
+        };
+        let same_width = match (value, ty) {
+            (IRExpr::Variable(variable), _) => types.get(variable) == Some(&ty),
+            (IRExpr::Convert { target, .. }, VariableType::Unknown(Some(size))) => {
+                target.size == size
+            }
+            (IRExpr::CU8(_), VariableType::Unknown(Some(1)))
+            | (IRExpr::CU32(_), VariableType::Unknown(Some(4)))
+            | (IRExpr::CU64(_), VariableType::Unknown(Some(8)))
+            | (IRExpr::Bool(_), VariableType::Bool) => true,
+            _ => false,
+        };
+        if !same_width {
+            return None;
+        }
+        let mut body = body.to_vec();
+        *body.last_mut()? = IRInst::Return(Some(value.clone()));
+        Some(body)
+    };
+    Some((
+        *target,
+        IRInst::If {
+            condition: condition.clone(),
+            then_branch: branch(then_branch)?,
+            else_branch: branch(else_branch)?,
+        },
+    ))
+}
+
 fn append_or(left: IRExpr, right: IRExpr) -> IRExpr {
     match right {
         IRExpr::BinOp {
@@ -134,7 +190,14 @@ fn simplify_branch(
 ) {
     let mut index = 1;
     while index < branch.len() {
-        if let Some((variable, value)) = constant_return(&branch[index - 1], &branch[index], types)
+        if let Some((variable, conditional)) =
+            joined_return(&branch[index - 1], &branch[index], types)
+        {
+            branch[index - 1] = conditional;
+            branch.remove(index);
+            folded.insert(variable);
+        } else if let Some((variable, value)) =
+            constant_return(&branch[index - 1], &branch[index], types)
         {
             branch[index] = IRInst::Return(Some(value));
             branch.remove(index - 1);
@@ -155,7 +218,14 @@ fn simplify_body(
 ) {
     let mut index = 1;
     while index < body.len() {
-        if let Some((variable, value)) = constant_return(&body[index - 1].1, &body[index].1, types)
+        if let Some((variable, conditional)) =
+            joined_return(&body[index - 1].1, &body[index].1, types)
+        {
+            body[index - 1].1 = conditional;
+            body.remove(index);
+            folded.insert(variable);
+        } else if let Some((variable, value)) =
+            constant_return(&body[index - 1].1, &body[index].1, types)
         {
             body[index].1 = IRInst::Return(Some(value));
             body.remove(index - 1);

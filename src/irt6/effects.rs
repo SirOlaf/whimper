@@ -31,15 +31,8 @@ impl Effects {
                 self.expression(address);
             }
             IRExpr::MemoryAddress { address: inner, .. }
-            | IRExpr::ExtractBytes { value: inner, .. }
-            | IRExpr::ZeroExtend { value: inner, .. }
+            | IRExpr::Convert { value: inner, .. }
             | IRExpr::Not(inner) => self.expression(inner),
-            IRExpr::ReplaceBytes {
-                original, value, ..
-            } => {
-                self.expression(original);
-                self.expression(value);
-            }
             IRExpr::Argument(_)
             | IRExpr::CU8(_)
             | IRExpr::CU32(_)

@@ -1,4 +1,5 @@
 mod eliminate_aliases;
+mod fold_constants;
 mod inline_loop_conditions;
 pub mod ir;
 mod place_declarations;
@@ -54,7 +55,10 @@ fn bin_op(kind: &t3::IRBinOpKind) -> IRBinOpKind {
     match kind {
         t3::IRBinOpKind::Add => IRBinOpKind::Add,
         t3::IRBinOpKind::Sub => IRBinOpKind::Sub,
+        t3::IRBinOpKind::Mul => IRBinOpKind::Mul,
         t3::IRBinOpKind::Shl => IRBinOpKind::Shl,
+        t3::IRBinOpKind::Shr => IRBinOpKind::Shr,
+        t3::IRBinOpKind::BitOr => IRBinOpKind::BitOr,
         t3::IRBinOpKind::And => IRBinOpKind::And,
         t3::IRBinOpKind::Or => IRBinOpKind::Or,
         t3::IRBinOpKind::Eq => IRBinOpKind::Eq,
@@ -76,29 +80,20 @@ fn expression(expr: &t3::IRExpr) -> IRExpr {
             size: *size,
         },
         t3::IRExpr::Argument(ordinal) => IRExpr::Argument(*ordinal),
-        t3::IRExpr::ExtractBytes {
+        t3::IRExpr::Convert {
             value,
-            offset,
-            size,
-        } => IRExpr::ExtractBytes {
+            source,
+            target,
+        } => IRExpr::Convert {
             value: Box::new(expression(value)),
-            offset: *offset,
-            size: *size,
-        },
-        t3::IRExpr::ZeroExtend { value, size } => IRExpr::ZeroExtend {
-            value: Box::new(expression(value)),
-            size: *size,
-        },
-        t3::IRExpr::ReplaceBytes {
-            original,
-            value,
-            offset,
-            size,
-        } => IRExpr::ReplaceBytes {
-            original: Box::new(expression(original)),
-            value: Box::new(expression(value)),
-            offset: *offset,
-            size: *size,
+            source: self::ir::IntegerType {
+                size: source.size,
+                signed: source.signed,
+            },
+            target: self::ir::IntegerType {
+                size: target.size,
+                signed: target.signed,
+            },
         },
         t3::IRExpr::CU8(value) => IRExpr::CU8(*value),
         t3::IRExpr::CU32(value) => IRExpr::CU32(*value),
@@ -383,6 +378,7 @@ pub fn lift(source: &t3::Program) -> Program {
             })
             .collect(),
     };
+    fold_constants::run(&mut program);
     eliminate_aliases::run(&mut program);
     inline_loop_conditions::run(&mut program);
     simplify_binary_operations::run(&mut program);

@@ -13,10 +13,12 @@ The sample binary remains ignored by Git.
 `cargo run -- --list-sections` prints the mapped section ranges and entry point.
 `cargo run -- --read 0x1401c8000 16` reads 16 mapped bytes at a virtual address
 and prints them as hex, including zero-filled data where applicable.
-By default, `cargo run` decompiles the existing example function at
-`0x140095be0` in the sample image. Use `--address 0x...` to select a different
+By default, `cargo run` decompiles the byte-string hash function at
+`0x14008d690` in the sample image. Use `--address 0x...` to select a different
 virtual address, and `--length 0x...` if the function is not followed by `INT3`
 padding. `--entry` selects the PE entry point.
+Use `--tier 1` through `--tier 6` to inspect a tier directly; add
+`--address-comments` to retain source addresses in the rendered view.
 
 The IR lifter still supports only a small subset of x86_64 instructions, so
 selecting arbitrary functions may fail. External jumps are not yet resolved as

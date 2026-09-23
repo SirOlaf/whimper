@@ -1,5 +1,7 @@
+mod constants;
 pub mod ir;
 pub mod render;
+mod values;
 
 use std::collections::HashMap;
 
@@ -16,6 +18,7 @@ fn lift_bin_op(kind: &t1::IRBinOpKind) -> IRBinOpKind {
     match kind {
         t1::IRBinOpKind::Add => IRBinOpKind::Add,
         t1::IRBinOpKind::Sub => IRBinOpKind::Sub,
+        t1::IRBinOpKind::Mul => IRBinOpKind::Mul,
         t1::IRBinOpKind::Shl => IRBinOpKind::Shl,
         t1::IRBinOpKind::And => IRBinOpKind::And,
         t1::IRBinOpKind::Or => IRBinOpKind::Or,
@@ -35,23 +38,6 @@ fn is_global_address(address: &t1::IRExpr) -> bool {
     }
 }
 
-// A dereference does not reveal its width from its address. Look for a data
-// register in the surrounding operation; the destination takes priority.
-fn source_width(expr: &t1::IRExpr) -> Option<usize> {
-    match expr {
-        t1::IRExpr::Reg(register) => Some(register.size()),
-        t1::IRExpr::BinOp { lhs, rhs, .. } => source_width(lhs).or_else(|| source_width(rhs)),
-        t1::IRExpr::Not(inner) => source_width(inner),
-        t1::IRExpr::Deref(_)
-        | t1::IRExpr::CU8(_)
-        | t1::IRExpr::CU32(_)
-        | t1::IRExpr::CU64(_)
-        | t1::IRExpr::Variable(_)
-        | t1::IRExpr::Bool(_) => None,
-        _ => panic!("tier 1 produced an unsupported expression: {expr:?}"),
-    }
-}
-
 fn register_offset(register: Register) -> usize {
     match register {
         Register::AH | Register::BH | Register::CH | Register::DH => 1,
@@ -61,14 +47,7 @@ fn register_offset(register: Register) -> usize {
 
 fn widen_register_value(register: Register, value: IRExpr) -> IRExpr {
     let full = register.full_register();
-    if register.size() == full.size() {
-        value
-    } else {
-        IRExpr::ZeroExtend {
-            value: Box::new(value),
-            size: full.size(),
-        }
-    }
+    values::convert(value, register.size(), full.size(), false)
 }
 
 struct FunctionLifter {
@@ -77,6 +56,8 @@ struct FunctionLifter {
     declarations: Vec<(VariableId, VariableType)>,
     source_variables: HashMap<t1::VariableId, VariableId>,
     registers: HashMap<Register, IRExpr>,
+    widths: HashMap<VariableId, usize>,
+    argument_widths: HashMap<usize, usize>,
 }
 
 impl FunctionLifter {
@@ -87,6 +68,8 @@ impl FunctionLifter {
             declarations: Vec::new(),
             source_variables: HashMap::new(),
             registers: HashMap::new(),
+            widths: HashMap::new(),
+            argument_widths: HashMap::new(),
         }
     }
 
@@ -101,8 +84,56 @@ impl FunctionLifter {
 
     fn slot(&mut self, ty: VariableType) -> VariableId {
         let variable = self.variable_id();
+        let width = match ty {
+            VariableType::Register(register) => Some(register.size()),
+            VariableType::Unknown(size) => size,
+            VariableType::Bool => Some(1),
+        };
+        if let Some(width) = width {
+            self.widths.insert(variable, width);
+        }
         self.declarations.push((variable, ty));
         variable
+    }
+
+    fn width(&self, value: &IRExpr) -> Option<usize> {
+        values::width(value, &self.widths, &self.argument_widths)
+    }
+
+    fn extract(&self, value: IRExpr, offset: usize, size: usize) -> IRExpr {
+        let width = self.width(&value).expect("unknown register value width");
+        assert!(
+            offset + size <= width,
+            "register read exceeds its value width"
+        );
+        if offset == 0 {
+            return values::convert(value, width, size, false);
+        }
+        if let Some((bits, _)) = values::constant(&value) {
+            return values::literal(bits >> (offset * 8), size);
+        }
+        if let IRExpr::Convert {
+            value: inner,
+            source,
+            target,
+        } = &value
+            && !source.signed
+            && target.size > source.size
+        {
+            if offset >= source.size {
+                return values::literal(0, size);
+            }
+            if offset + size <= source.size {
+                return self.extract((**inner).clone(), offset, size);
+            }
+        }
+        let shifted = values::binary(
+            IRBinOpKind::Shr,
+            value,
+            IRExpr::CU8((offset * 8) as u8),
+            width,
+        );
+        values::convert(shifted, width, size, false)
     }
 
     fn read_register(&self, register: Register) -> IRExpr {
@@ -118,81 +149,78 @@ impl FunctionLifter {
         }
         let offset = register_offset(register);
         let size = register.size();
-        // The low 32 bits of a zero-extended 32-bit write are its slot.
-        if offset == 0
-            && size == 4
-            && let IRExpr::ZeroExtend { value, .. } = current
-        {
-            return (**value).clone();
-        }
-        IRExpr::ExtractBytes {
-            value: Box::new(current.clone()),
-            offset,
-            size,
-        }
+        self.extract(current.clone(), offset, size)
     }
 
-    fn write_register(&mut self, register: Register) -> VariableId {
-        let variable = self.slot(VariableType::Register(register));
+    fn write_register(&mut self, register: Register, value: IRExpr) {
         let full = register.full_register();
-        let written = IRExpr::Variable(variable);
         let next = if register == full {
-            written
+            value
         } else if register.is_gpr32() && full.size() == 8 {
-            IRExpr::ZeroExtend {
-                value: Box::new(written),
-                size: 8,
-            }
+            values::convert(value, 4, 8, false)
         } else {
-            let original =
-                self.registers
-                    .get(&full)
-                    .cloned()
-                    .unwrap_or_else(|| IRExpr::ZeroExtend {
-                        value: Box::new(IRExpr::CU8(0)),
-                        size: full.size(),
-                    });
-            IRExpr::ReplaceBytes {
-                original: Box::new(original),
-                value: Box::new(written),
-                offset: register_offset(register),
-                size: register.size(),
-            }
+            let original = self
+                .registers
+                .get(&full)
+                .cloned()
+                .expect("tier 1 omitted the preserved part of a partial register write");
+            let shift = register_offset(register) * 8;
+            let field_mask = values::mask(register.size()) << shift;
+            let preserved = values::binary(
+                IRBinOpKind::And,
+                original,
+                values::literal(!field_mask, full.size()),
+                full.size(),
+            );
+            let extended = values::convert(value, register.size(), full.size(), false);
+            let inserted = values::binary(
+                IRBinOpKind::Shl,
+                extended,
+                IRExpr::CU8(shift as u8),
+                full.size(),
+            );
+            values::binary(IRBinOpKind::BitOr, preserved, inserted, full.size())
         };
         self.registers.insert(full, next);
-        variable
     }
 
-    fn expr(
-        &mut self,
-        expr: &t1::IRExpr,
-        width: Option<usize>,
-        before: &mut Vec<IRInst>,
-    ) -> IRExpr {
+    fn expr(&mut self, expr: &t1::IRExpr, before: &mut Vec<IRInst>) -> IRExpr {
         match expr {
             t1::IRExpr::BinOp { kind, lhs, rhs } => {
-                let width = match kind {
-                    t1::IRBinOpKind::Add
-                    | t1::IRBinOpKind::Sub
-                    | t1::IRBinOpKind::Shl
-                    | t1::IRBinOpKind::And => width.or_else(|| source_width(expr)),
-                    t1::IRBinOpKind::Or
-                    | t1::IRBinOpKind::Eq
-                    | t1::IRBinOpKind::SignedGt
-                    | t1::IRBinOpKind::UnsignedLt => {
-                        width
+                let lhs = self.expr(lhs, before);
+                let rhs = self.expr(rhs, before);
+                let size =
+                    if values::constant(&lhs).is_some() && !matches!(kind, t1::IRBinOpKind::Shl) {
+                        self.width(&rhs).or_else(|| self.width(&lhs))
+                    } else {
+                        self.width(&lhs).or_else(|| self.width(&rhs))
                     }
-                };
-                IRExpr::BinOp {
-                    kind: lift_bin_op(kind),
-                    lhs: Box::new(self.expr(lhs, width, before)),
-                    rhs: Box::new(self.expr(rhs, width, before)),
-                }
+                    .expect("unknown arithmetic width");
+                values::binary(lift_bin_op(kind), lhs, rhs, size)
             }
-            t1::IRExpr::Deref(address) => {
+            t1::IRExpr::ExtractBytes {
+                value,
+                offset,
+                size,
+            } => {
+                let value = self.expr(value, before);
+                self.extract(value, *offset, *size)
+            }
+            t1::IRExpr::ZeroExtend { value, size } | t1::IRExpr::SignExtend { value, size } => {
+                let value = self.expr(value, before);
+                let from = self.width(&value).expect("unknown conversion input width");
+                values::convert(
+                    value,
+                    from,
+                    *size,
+                    matches!(expr, t1::IRExpr::SignExtend { .. }),
+                )
+            }
+            t1::IRExpr::Deref { address, size } => {
+                let width = Some(*size);
                 let global = is_global_address(address);
                 let address = IRExpr::CastUnknownPtr {
-                    address: Box::new(self.expr(address, None, before)),
+                    address: Box::new(self.expr(address, before)),
                     size: width,
                 };
                 if global {
@@ -210,7 +238,7 @@ impl FunctionLifter {
             t1::IRExpr::CU64(value) => IRExpr::CU64(*value),
             t1::IRExpr::Variable(variable) => IRExpr::Variable(self.source_variables[variable]),
             t1::IRExpr::Bool(value) => IRExpr::Bool(*value),
-            t1::IRExpr::Not(inner) => IRExpr::Not(Box::new(self.expr(inner, width, before))),
+            t1::IRExpr::Not(inner) => IRExpr::Not(Box::new(self.expr(inner, before))),
             _ => panic!("tier 1 produced an unsupported expression: {expr:?}"),
         }
     }
@@ -219,63 +247,58 @@ impl FunctionLifter {
         let mut before = Vec::new();
         let lifted = match instr {
             t1::IRInst::Assign { dest, src } => {
-                let width = match dest {
-                    t1::IRExpr::Reg(register) => Some(register.size()),
-                    _ => source_width(src),
-                };
-                let src = self.expr(src, width, &mut before);
+                let src = self.expr(src, &mut before);
                 match dest {
                     t1::IRExpr::Reg(register) => {
-                        let variable = self.write_register(*register);
+                        let width = self.width(&src).expect("unknown register assignment width");
+                        let src = values::convert(src, width, register.size(), false);
+                        // Constants and immutable snapshots need no register slot.
+                        if values::snapshot(&src) {
+                            self.write_register(*register, src);
+                            return before;
+                        }
+                        let variable = self.slot(VariableType::Register(*register));
+                        self.write_register(*register, IRExpr::Variable(variable));
                         IRInst::AssignVariable {
                             variable,
                             value: src,
                         }
                     }
-                    t1::IRExpr::Deref(address) => {
-                        let global = is_global_address(address);
+                    t1::IRExpr::Deref { address, size } => {
+                        let width = Some(*size);
                         let address = IRExpr::CastUnknownPtr {
-                            address: Box::new(self.expr(address, None, &mut before)),
+                            address: Box::new(self.expr(address, &mut before)),
                             size: width,
                         };
-                        if !global {
-                            // This slot stages a memory store. Even if its source
-                            // is a register, it is not a machine register write.
-                            let variable = self.slot(VariableType::Unknown(width));
-                            before.push(IRInst::AssignVariable {
-                                variable,
-                                value: src,
-                            });
-                            before.push(IRInst::StoreVariable { address, variable });
-                            return before;
-                        }
-                        IRInst::Assign {
-                            dest: IRExpr::Deref(Box::new(address)),
-                            src,
+                        if let IRExpr::Variable(variable) = src {
+                            IRInst::StoreVariable { address, variable }
+                        } else {
+                            IRInst::Assign {
+                                dest: IRExpr::Deref(Box::new(address)),
+                                src,
+                            }
                         }
                     }
                     dest => IRInst::Assign {
-                        dest: self.expr(dest, width, &mut before),
+                        dest: self.expr(dest, &mut before),
                         src,
                     },
                 }
             }
-            t1::IRInst::Return(value) => IRInst::Return(
-                value
-                    .as_ref()
-                    .map(|value| self.expr(value, source_width(value), &mut before)),
-            ),
+            t1::IRInst::Return(value) => {
+                IRInst::Return(value.as_ref().map(|value| self.expr(value, &mut before)))
+            }
             t1::IRInst::DeclareVariable { .. } => return before,
             t1::IRInst::AssignVariable { variable, value } => IRInst::AssignVariable {
                 variable: self.source_variables[variable],
-                value: self.expr(value, source_width(value), &mut before),
+                value: self.expr(value, &mut before),
             },
             t1::IRInst::If {
                 condition,
                 then_branch,
                 else_branch,
             } => IRInst::If {
-                condition: self.expr(condition, source_width(condition), &mut before),
+                condition: self.expr(condition, &mut before),
                 then_branch: self.inst(then_branch),
                 else_branch: self.inst(else_branch),
             },
@@ -286,12 +309,10 @@ impl FunctionLifter {
                 function: SyntheticFunctionId { id: function.id },
                 arguments: arguments
                     .iter()
-                    .map(|argument| self.expr(argument, source_width(argument), &mut before))
+                    .map(|argument| self.expr(argument, &mut before))
                     .collect(),
             },
-            t1::IRInst::Jump(target) => {
-                IRInst::Jump(self.expr(target, source_width(target), &mut before))
-            }
+            t1::IRInst::Jump(target) => IRInst::Jump(self.expr(target, &mut before)),
             t1::IRInst::End => IRInst::End,
             _ => panic!("tier 1 produced an unsupported instruction: {instr:?}"),
         };
@@ -310,6 +331,7 @@ fn lift_function(id: usize, source: &t1::SyntheticFunction, entry: bool) -> Synt
         .enumerate()
         .map(|(index, register)| {
             if entry {
+                lifter.argument_widths.insert(index + 1, register.size());
                 lifter.registers.insert(
                     register.full_register(),
                     widen_register_value(*register, IRExpr::Argument(index + 1)),
@@ -320,6 +342,7 @@ fn lift_function(id: usize, source: &t1::SyntheticFunction, entry: bool) -> Synt
                 }
             } else {
                 let variable = lifter.variable_id();
+                lifter.widths.insert(variable, register.size());
                 lifter.registers.insert(
                     register.full_register(),
                     widen_register_value(*register, IRExpr::Variable(variable)),
@@ -364,7 +387,7 @@ fn lift_function(id: usize, source: &t1::SyntheticFunction, entry: bool) -> Synt
 }
 
 pub fn lift(source: &t1::Program) -> Program {
-    Program {
+    let mut program = Program {
         entry: source
             .entry
             .map(|entry| SyntheticFunctionId { id: entry.id }),
@@ -376,5 +399,7 @@ pub fn lift(source: &t1::Program) -> Program {
                 lift_function(id, function, source.entry.is_some_and(|e| e.id == id))
             })
             .collect(),
-    }
+    };
+    constants::run(&mut program);
+    program
 }

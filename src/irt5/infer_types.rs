@@ -32,6 +32,7 @@ struct Evidence {
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct PointerUse {
     dereferenced: bool,
+    indexed: bool,
     other: bool,
 }
 
@@ -213,8 +214,9 @@ impl Analysis {
             });
         }
         match expr {
+            IRExpr::Convert { .. } => true,
             IRExpr::BinOp {
-                kind: IRBinOpKind::Add | IRBinOpKind::Sub | IRBinOpKind::Shl,
+                kind: IRBinOpKind::Add | IRBinOpKind::Sub | IRBinOpKind::Mul | IRBinOpKind::Shl,
                 lhs,
                 rhs,
             } => self.integer_offset(lhs, owner) && self.integer_offset(rhs, owner),
@@ -274,6 +276,11 @@ impl Analysis {
                 if let Some(slot) = direct_slot(expr, owner) {
                     self.pointer_use(slot, true);
                 } else if let Some((base, offset)) = self.address_base(expr, owner) {
+                    if literal_size(offset).is_none()
+                        && let Some(slot) = direct_slot(base, owner)
+                    {
+                        self.pointer_uses.entry(slot).or_default().indexed = true;
+                    }
                     self.pointer_address_uses(base, owner);
                     self.pointer_value(offset, owner);
                 } else {
@@ -294,15 +301,8 @@ impl Analysis {
                 self.pointer_value(lhs, owner);
                 self.pointer_value(rhs, owner);
             }
-            IRExpr::ReplaceBytes {
-                original, value, ..
-            } => {
-                self.pointer_value(original, owner);
-                self.pointer_value(value, owner);
-            }
             IRExpr::MemoryAddress { address: value, .. }
-            | IRExpr::ExtractBytes { value, .. }
-            | IRExpr::ZeroExtend { value, .. }
+            | IRExpr::Convert { value, .. }
             | IRExpr::Not(value) => self.pointer_value(value, owner),
             IRExpr::CU8(_) | IRExpr::CU32(_) | IRExpr::CU64(_) | IRExpr::Bool(_) => {}
             IRExpr::Argument(_) | IRExpr::Variable(_) => unreachable!(),
@@ -341,17 +341,12 @@ impl Analysis {
                 self.address(lhs, owner);
                 self.address(rhs, owner);
             }
-            IRExpr::ReplaceBytes {
-                original, value, ..
-            } => {
-                self.address(original, owner);
-                self.address(value, owner);
-            }
             IRExpr::Deref(inner)
             | IRExpr::MemoryAddress { address: inner, .. }
-            | IRExpr::ExtractBytes { value: inner, .. }
-            | IRExpr::ZeroExtend { value: inner, .. }
             | IRExpr::Not(inner) => self.address(inner, owner),
+            // Conversions in addresses produce numeric byte offsets. Their
+            // input slots are not themselves pointers.
+            IRExpr::Convert { .. } => self.expression(expr, owner),
             IRExpr::CU8(_) | IRExpr::CU32(_) | IRExpr::CU64(_) | IRExpr::Bool(_) => {}
             IRExpr::Argument(_) | IRExpr::Variable(_) => unreachable!(),
         }
@@ -361,14 +356,15 @@ impl Analysis {
         match expr {
             IRExpr::BinOp { kind, lhs, rhs } => {
                 match kind {
-                    IRBinOpKind::Shl
+                    IRBinOpKind::Mul
+                    | IRBinOpKind::Shl
+                    | IRBinOpKind::Shr
+                    | IRBinOpKind::BitOr
                     | IRBinOpKind::SignedGt
                     | IRBinOpKind::UnsignedLt
                     | IRBinOpKind::UnsignedGe => {
-                        let unsigned = matches!(
-                            kind,
-                            IRBinOpKind::UnsignedLt | IRBinOpKind::UnsignedGe
-                        );
+                        let unsigned =
+                            matches!(kind, IRBinOpKind::UnsignedLt | IRBinOpKind::UnsignedGe);
                         for operand in [lhs.as_ref(), rhs.as_ref()] {
                             if let Some(slot) = direct_slot(operand, owner) {
                                 self.integer(slot, unsigned);
@@ -395,15 +391,13 @@ impl Analysis {
                 self.address(address, owner);
                 self.expression(address, owner);
             }
-            IRExpr::ReplaceBytes {
-                original, value, ..
-            } => {
-                self.expression(original, owner);
+            IRExpr::Convert { value, source, .. } => {
+                if let Some(slot) = direct_slot(value, owner) {
+                    self.integer(slot, !source.signed);
+                }
                 self.expression(value, owner);
             }
-            IRExpr::ExtractBytes { value, .. }
-            | IRExpr::ZeroExtend { value, .. }
-            | IRExpr::Not(value) => self.expression(value, owner),
+            IRExpr::Not(value) => self.expression(value, owner),
             IRExpr::Argument(_)
             | IRExpr::Variable(_)
             | IRExpr::CU8(_)
@@ -420,11 +414,14 @@ impl Analysis {
         if matches!(
             value,
             IRExpr::BinOp {
-                kind: IRBinOpKind::Shl,
+                kind: IRBinOpKind::Mul | IRBinOpKind::Shl,
                 ..
-            }
+            } | IRExpr::Convert { .. }
         ) {
-            self.integer(dest, false);
+            self.integer(
+                dest,
+                matches!(value, IRExpr::Convert { target, .. } if !target.signed),
+            );
         }
         self.expression(value, owner);
     }
@@ -588,6 +585,7 @@ impl Analysis {
                 let right = self.pointer_uses.get(&src).copied().unwrap_or_default();
                 let merged = PointerUse {
                     dereferenced: left.dereferenced || right.dereferenced,
+                    indexed: left.indexed || right.indexed,
                     other: left.other || right.other,
                 };
                 for slot in [dest, src] {
@@ -599,6 +597,10 @@ impl Analysis {
             for &(dest, base, _) in &self.derived_addresses {
                 let result = self.pointer_uses.get(&dest).copied().unwrap_or_default();
                 let uses = self.pointer_uses.entry(base).or_default();
+                if result.indexed && !uses.indexed {
+                    uses.indexed = true;
+                    changed = true;
+                }
                 if result.dereferenced && !uses.dereferenced {
                     uses.dereferenced = true;
                     changed = true;
@@ -912,7 +914,14 @@ impl Analysis {
             Slot::Variable(variable) => (variable.owner.id, 1, variable.id),
         });
         for slot in slots {
-            if self.struct_ids.contains_key(&slot) {
+            // Fixed displacements alongside a dynamic index describe array
+            // elements; they do not establish a closed struct layout.
+            if self
+                .pointer_uses
+                .get(&slot)
+                .is_some_and(|uses| uses.indexed)
+                || self.struct_ids.contains_key(&slot)
+            {
                 continue;
             }
             let id = StructId {
@@ -925,6 +934,10 @@ impl Analysis {
                     .fields
                     .get(&current)
                     .is_some_and(|fields| fields.len() > 1)
+                    || self
+                        .pointer_uses
+                        .get(&current)
+                        .is_some_and(|uses| uses.indexed)
                     || self.struct_ids.contains_key(&current)
                 {
                     continue;
