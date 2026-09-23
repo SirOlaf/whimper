@@ -4,12 +4,12 @@
 //! facts. Each successful rewrite restarts rule selection; a recognizer can
 //! therefore rely on shapes established by earlier, independent rules.
 
-use std::fmt::Write;
+use std::{collections::HashMap, fmt::Write};
 
 use super::{
     arithmetic::{Bindings, Context, Kind, Value},
     effects::{Effects, repeatable},
-    ir::{IRBinOpKind, IRExpr, IRInst, LoopCondition, Program},
+    ir::{IRBinOpKind, IRExpr, IRInst, LoopCondition, Program, VariableId},
     shapes::{self, LoopAnalysis},
 };
 
@@ -230,6 +230,143 @@ fn recover_remainder(
 const MAX_REWRITES: usize = 256;
 const MAX_LOCAL_ROUNDS: usize = 16;
 
+trait InstructionSlot {
+    fn instruction(&self) -> &IRInst;
+    fn instruction_mut(&mut self) -> &mut IRInst;
+    fn offset(&self, fallback: usize) -> usize;
+}
+
+impl InstructionSlot for IRInst {
+    fn instruction(&self) -> &IRInst {
+        self
+    }
+
+    fn instruction_mut(&mut self) -> &mut IRInst {
+        self
+    }
+
+    fn offset(&self, fallback: usize) -> usize {
+        fallback
+    }
+}
+
+impl InstructionSlot for (usize, IRInst) {
+    fn instruction(&self) -> &IRInst {
+        &self.1
+    }
+
+    fn instruction_mut(&mut self) -> &mut IRInst {
+        &mut self.1
+    }
+
+    fn offset(&self, _fallback: usize) -> usize {
+        self.0
+    }
+}
+
+#[derive(Default)]
+struct VariableUses {
+    reads: usize,
+    writes: usize,
+}
+
+fn add_uses(effects: &Effects, uses: &mut HashMap<VariableId, VariableUses>) {
+    for variable in &effects.reads {
+        uses.entry(*variable).or_default().reads += 1;
+    }
+    for variable in &effects.writes {
+        uses.entry(*variable).or_default().writes += 1;
+    }
+}
+
+fn collect_uses(instr: &IRInst, uses: &mut HashMap<VariableId, VariableUses>) {
+    match instr {
+        IRInst::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            add_uses(&Effects::of_expression(condition), uses);
+            for instr in then_branch.iter().chain(else_branch) {
+                collect_uses(instr, uses);
+            }
+        }
+        IRInst::While {
+            condition, body, ..
+        } => {
+            let (LoopCondition::Before { expression, .. }
+            | LoopCondition::After { expression, .. }) = condition;
+            add_uses(&Effects::of_expression(expression), uses);
+            for (_, instr) in body {
+                collect_uses(instr, uses);
+            }
+        }
+        _ => {
+            let mut effects = Effects::default();
+            effects.instruction(instr);
+            add_uses(&effects, uses);
+        }
+    }
+}
+
+fn collapse_temporary_assignments<T: InstructionSlot>(
+    instructions: &mut Vec<T>,
+    fallback_offset: usize,
+    context: &Context,
+    uses: &HashMap<VariableId, VariableUses>,
+    report: &mut Report,
+) {
+    for slot in instructions.iter_mut() {
+        let offset = slot.offset(fallback_offset);
+        match slot.instruction_mut() {
+            IRInst::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collapse_temporary_assignments(then_branch, offset, context, uses, report);
+                collapse_temporary_assignments(else_branch, offset, context, uses, report);
+            }
+            IRInst::While { body, .. } => {
+                collapse_temporary_assignments(body, offset, context, uses, report);
+            }
+            _ => {}
+        }
+    }
+    let mut index = 0;
+    while index + 2 < instructions.len() {
+        if report.rewrites.len() >= MAX_REWRITES {
+            report.budget_exhausted = true;
+            return;
+        }
+        let shape = shapes::temporary_binary_assignment(
+            instructions[index].instruction(),
+            instructions[index + 1].instruction(),
+            instructions[index + 2].instruction(),
+            context,
+        );
+        if let Some(shape) = shape
+            && matches!(
+                uses.get(&shape.temporary),
+                Some(VariableUses {
+                    reads: 2,
+                    writes: 2,
+                })
+            )
+        {
+            let offset = instructions[index + 2].offset(fallback_offset);
+            *instructions[index + 2].instruction_mut() = shape.replacement;
+            instructions.drain(index..index + 2);
+            report.rewrites.push(Rewrite {
+                offset,
+                rule: "temporary-binary-to-assignment",
+            });
+        } else {
+            index += 1;
+        }
+    }
+}
+
 fn sequence<'a>(
     instructions: impl Iterator<Item = (usize, &'a mut IRInst)>,
     context: &Context,
@@ -362,6 +499,17 @@ pub fn run_with_options(program: &mut Program, options: Options) -> Report {
             &context,
             Facts::default(),
             &options,
+            &mut report,
+        );
+        let mut uses = HashMap::new();
+        for (_, instr) in &function.body {
+            collect_uses(instr, &mut uses);
+        }
+        collapse_temporary_assignments(
+            &mut function.body,
+            function.entry_offset,
+            &context,
+            &uses,
             &mut report,
         );
         for (_, instr) in &function.body {
