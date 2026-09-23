@@ -106,6 +106,8 @@ fn lift_op(x: Instruction, i: u32) -> IRExpr {
         OpKind::Register => IRExpr::Reg(x.op_register(i)),
         OpKind::NearBranch64 => IRExpr::CU64(x.near_branch_target()),
         OpKind::Immediate8 => IRExpr::CU8(x.immediate8()),
+        OpKind::Immediate32 => IRExpr::CU32(x.immediate32()),
+        OpKind::Immediate64 => IRExpr::CU64(x.immediate64()),
         _ => {
             panic!("Unimplemented address kind: {:?}", x.op_kind(i));
         }
@@ -114,7 +116,11 @@ fn lift_op(x: Instruction, i: u32) -> IRExpr {
 
 fn lift_mov(x: Instruction) -> Vec<IRInst> {
     match x.code() {
-        Code::Mov_r64_rm64 | Code::Mov_r32_rm32 | Code::Mov_rm32_r32 => {
+        Code::Mov_r64_rm64
+        | Code::Mov_r32_rm32
+        | Code::Mov_rm32_r32
+        | Code::Mov_r32_imm32
+        | Code::Mov_r64_imm64 => {
             vec![IRInst::Asgn {
                 dest: lift_op(x, 0),
                 src: lift_op(x, 1),
