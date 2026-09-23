@@ -89,7 +89,7 @@ fn lift_op(x: Instruction, i: u32) -> IRExpr {
             }
 
             if index_reg != Register::None {
-                if x.vsib().is_none() {
+                if x.vsib().is_some() {
                     unimplemented!()
                 } else {
                     res = IRExpr::BinOp {

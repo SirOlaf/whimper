@@ -81,7 +81,7 @@ fn prune_program(program: ir::Program, flag_code: Vec<FlagIR>) -> ir::Program {
     for instr in program.into_iter() {
         match &instr.1 {
             IRInst::SetFlagsFrom(flags, _) | IRInst::ClearFlags(flags) => {
-                if flags.is_empty() {
+                if !flags.is_empty() {
                     res.push(instr);
                 }
             }
