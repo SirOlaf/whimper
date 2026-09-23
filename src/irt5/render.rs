@@ -3,17 +3,17 @@
 use std::{collections::HashMap, fmt::Write};
 
 use super::ir::{
-    IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, SyntheticFunction,
-    SyntheticFunctionId, VariableId, VariableType, field_address,
+    IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, StructDefinition,
+    SyntheticFunction, SyntheticFunctionId, VariableId, VariableType, field_address,
 };
 
-#[derive(Default)]
-struct RenderTypes {
+struct RenderTypes<'a> {
     arguments: HashMap<usize, VariableType>,
     variables: HashMap<VariableId, VariableType>,
+    structs: &'a [StructDefinition],
 }
 
-impl RenderTypes {
+impl<'a> RenderTypes<'a> {
     fn collect_instruction(&mut self, instr: &IRInst) {
         match instr {
             IRInst::DeclareVariable { variable, ty }
@@ -38,8 +38,12 @@ impl RenderTypes {
         }
     }
 
-    fn from_function(function: &SyntheticFunction) -> Self {
-        let mut slots = Self::default();
+    fn from_function(function: &SyntheticFunction, structs: &'a [StructDefinition]) -> Self {
+        let mut slots = Self {
+            arguments: HashMap::new(),
+            variables: HashMap::new(),
+            structs,
+        };
         for parameter in &function.parameters {
             match parameter {
                 Parameter::Argument { ordinal, ty } => {
@@ -102,15 +106,17 @@ impl RenderTypes {
         }
     }
 
-    fn struct_field<'a>(&self, address: &'a IRExpr) -> Option<(&'a IRExpr, usize)> {
+    fn struct_field<'b>(&self, address: &'b IRExpr) -> Option<(&'b IRExpr, usize)> {
         let (base, offset) = field_address(address)?;
         let Some(VariableType::Pointer(pointee)) = self.direct_type(base) else {
             return None;
         };
-        let VariableType::Struct(fields) = *pointee else {
+        let VariableType::Struct(id) = *pointee else {
             return None;
         };
-        fields
+        self.structs
+            .get(id.id)?
+            .fields
             .iter()
             .any(|field| field.offset == offset)
             .then_some((base, offset))
@@ -125,20 +131,16 @@ fn variable_name(id: VariableId) -> String {
     format!("v{}", id.id)
 }
 
-fn type_name(ty: VariableType) -> String {
+fn type_name(ty: VariableType, structs: &[StructDefinition]) -> String {
     match ty {
         VariableType::Unknown(Some(size)) => format!("Unknown{size}"),
         VariableType::Unknown(None) => "Unknown".to_string(),
         VariableType::UnknownPointer => "Unknown*".to_string(),
-        VariableType::Pointer(pointee) => format!("{}*", type_name(*pointee)),
-        VariableType::Struct(fields) => {
-            let fields = fields
-                .into_iter()
-                .map(|field| format!("_0x{:x}: {}", field.offset, type_name(field.ty)))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("struct {{ {fields} }}")
-        }
+        VariableType::Pointer(pointee) => format!("{}*", type_name(*pointee, structs)),
+        VariableType::Struct(id) => structs.get(id.id).map_or_else(
+            || format!("AStruct{}", id.id),
+            |definition| definition.name.clone(),
+        ),
         VariableType::Bool => "Bool".to_string(),
         VariableType::Integer(bits) => format!("i{bits}"),
         VariableType::UnsignedInteger(bits) => format!("u{bits}"),
@@ -270,7 +272,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize, types: &Rende
             writeln!(output, "{padding}return;").unwrap();
         }
         IRInst::DeclareVariable { variable, ty } => {
-            let ty = type_name(ty.clone());
+            let ty = type_name(ty.clone(), types.structs);
             writeln!(output, "{padding}let {}: {ty};", variable_name(*variable)).unwrap();
         }
         IRInst::DeclareAndAssignVariable {
@@ -278,7 +280,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize, types: &Rende
             ty,
             value,
         } => {
-            let ty = type_name(ty.clone());
+            let ty = type_name(ty.clone(), types.structs);
             writeln!(
                 output,
                 "{padding}let {}: {ty} = {};",
@@ -432,17 +434,21 @@ pub fn render(program: &Program) -> String {
     }
 
     for (index, function) in program.functions.iter().enumerate() {
-        let types = RenderTypes::from_function(function);
+        let types = RenderTypes::from_function(function, &program.structs);
         let id = SyntheticFunctionId { id: index };
         let parameters = function
             .parameters
             .iter()
             .map(|parameter| match parameter {
                 Parameter::Argument { ordinal, ty } => {
-                    format!("arg{ordinal}: {}", type_name(ty.clone()))
+                    format!("arg{ordinal}: {}", type_name(ty.clone(), &program.structs))
                 }
                 Parameter::Slot { variable, ty } => {
-                    format!("{}: {}", variable_name(*variable), type_name(ty.clone()))
+                    format!(
+                        "{}: {}",
+                        variable_name(*variable),
+                        type_name(ty.clone(), &program.structs)
+                    )
                 }
             })
             .collect::<Vec<_>>()

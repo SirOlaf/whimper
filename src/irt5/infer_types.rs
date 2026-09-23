@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::ir::{
-    IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, StructField,
-    SyntheticFunctionId, VariableId, VariableType, field_address,
+    IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, StructDefinition, StructField,
+    StructId, SyntheticFunctionId, VariableId, VariableType, field_address,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -128,6 +128,8 @@ struct Analysis {
     fields: HashMap<Slot, BTreeMap<usize, FieldEvidence>>,
     field_links: HashSet<FieldLink>,
     field_slot_types: HashMap<Slot, PointeeEvidence>,
+    struct_ids: HashMap<Slot, StructId>,
+    struct_representatives: Vec<Slot>,
 }
 
 fn direct_slot(expr: &IRExpr, owner: SyntheticFunctionId) -> Option<Slot> {
@@ -893,6 +895,74 @@ impl Analysis {
         }
     }
 
+    fn assign_struct_ids(&mut self, first_id: usize) {
+        let mut slots = self
+            .fields
+            .iter()
+            .filter_map(|(&slot, fields)| (fields.len() > 1).then_some(slot))
+            .collect::<Vec<_>>();
+        slots.sort_by_key(|slot| match slot {
+            Slot::Argument(owner, ordinal) => (owner.id, 0, *ordinal),
+            Slot::Variable(variable) => (variable.owner.id, 1, variable.id),
+        });
+        for slot in slots {
+            if self.struct_ids.contains_key(&slot) {
+                continue;
+            }
+            let id = StructId {
+                id: first_id + self.struct_representatives.len(),
+            };
+            self.struct_representatives.push(slot);
+            let mut pending = vec![slot];
+            while let Some(current) = pending.pop() {
+                if !self
+                    .fields
+                    .get(&current)
+                    .is_some_and(|fields| fields.len() > 1)
+                    || self.struct_ids.contains_key(&current)
+                {
+                    continue;
+                }
+                self.struct_ids.insert(current, id);
+                for &(dest, src) in &self.copies {
+                    if dest == current && !self.struct_ids.contains_key(&src) {
+                        pending.push(src);
+                    } else if src == current && !self.struct_ids.contains_key(&dest) {
+                        pending.push(dest);
+                    }
+                }
+            }
+        }
+    }
+
+    fn struct_definitions(&self, existing: &[StructDefinition]) -> Vec<StructDefinition> {
+        let mut names = existing
+            .iter()
+            .map(|definition| definition.name.clone())
+            .collect::<HashSet<_>>();
+        let mut next_name = 0;
+        self.struct_representatives
+            .iter()
+            .map(|slot| {
+                let name = loop {
+                    let candidate = format!("AStruct{next_name}");
+                    next_name += 1;
+                    if names.insert(candidate.clone()) {
+                        break candidate;
+                    }
+                };
+                let fields = self.fields[slot]
+                    .iter()
+                    .map(|(&offset, evidence)| StructField {
+                        offset,
+                        ty: evidence.ty(),
+                    })
+                    .collect();
+                StructDefinition { name, fields }
+            })
+            .collect()
+    }
+
     fn propagate_field_types_to_slots(&mut self) {
         for link in &self.field_links {
             let Some(field) = self
@@ -960,17 +1030,8 @@ impl Analysis {
         if original != VariableType::Unknown(Some(8)) {
             return original;
         }
-        if let Some(fields) = self.fields.get(&slot)
-            && fields.len() > 1
-        {
-            let fields = fields
-                .iter()
-                .map(|(&offset, evidence)| StructField {
-                    offset,
-                    ty: evidence.ty(),
-                })
-                .collect();
-            return VariableType::Pointer(Box::new(VariableType::Struct(fields)));
+        if let Some(id) = self.struct_ids.get(&slot) {
+            return VariableType::Pointer(Box::new(VariableType::Struct(*id)));
         }
         let uses = self.pointer_uses.get(&slot).copied().unwrap_or_default();
         let integer = self
@@ -1164,6 +1225,8 @@ pub fn run(program: &mut Program) {
         }
     }
     analysis.propagate_pointer_uses();
+    analysis.propagate_fields();
+    analysis.assign_struct_ids(program.structs.len());
     for (index, function) in program.functions.iter().enumerate() {
         let owner = SyntheticFunctionId { id: index };
         for (_, instr) in &function.body {
@@ -1181,6 +1244,8 @@ pub fn run(program: &mut Program) {
     }
     analysis.propagate_fields();
     analysis.propagate_field_types_to_slots();
+    let definitions = analysis.struct_definitions(&program.structs);
+    program.structs.extend(definitions);
     for (index, function) in program.functions.iter_mut().enumerate() {
         let owner = SyntheticFunctionId { id: index };
         for parameter in &mut function.parameters {

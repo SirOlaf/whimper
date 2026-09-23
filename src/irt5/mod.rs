@@ -217,6 +217,7 @@ pub fn lift(source: &t4::Program) -> Program {
     let mut ids = VariableIds::default();
     let mut program = Program {
         entry: source.entry.map(function_id),
+        structs: Vec::new(),
         functions: source
             .functions
             .iter()

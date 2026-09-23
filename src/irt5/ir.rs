@@ -2,6 +2,8 @@
 pub struct Program {
     pub entry: Option<SyntheticFunctionId>,
     pub functions: Vec<SyntheticFunction>,
+    /// Named and inferred struct definitions used by tier 5 types.
+    pub structs: Vec<StructDefinition>,
 }
 
 /// One shared partition lifted into a synthetic function.
@@ -37,6 +39,17 @@ pub struct VariableId {
     pub id: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StructId {
+    pub id: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructDefinition {
+    pub name: String,
+    pub fields: Vec<StructField>,
+}
+
 /// Identifies a loop when a recovered back edge crosses another loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LoopId {
@@ -51,8 +64,8 @@ pub enum VariableType {
     UnknownPointer,
     /// A pointer whose pointee type is supported by tier 5 evidence.
     Pointer(Box<VariableType>),
-    /// A pointee accessed through distinct, constant field offsets.
-    Struct(Vec<StructField>),
+    /// A struct definition in this tier's program.
+    Struct(StructId),
     Bool,
     /// Integer-shaped, with no signedness evidence. Width is in bits.
     Integer(usize),
