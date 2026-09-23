@@ -1,5 +1,7 @@
+mod eliminate_aliases;
 pub mod ir;
 pub mod render;
+mod variable_flow;
 
 use crate::irt3::ir as t3;
 
@@ -366,7 +368,7 @@ fn instruction(instr: &t3::IRInst) -> IRInst {
 }
 
 pub fn lift(source: &t3::Program) -> Program {
-    Program {
+    let mut program = Program {
         entry: source.entry.map(function_id),
         functions: source
             .functions
@@ -381,5 +383,7 @@ pub fn lift(source: &t3::Program) -> Program {
                     .collect(),
             })
             .collect(),
-    }
+    };
+    eliminate_aliases::run(&mut program);
+    program
 }
