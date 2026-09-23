@@ -47,6 +47,14 @@ fn precedence(expr: &IRExpr) -> u8 {
     }
 }
 
+fn binary_operand(expr: &IRExpr, parent_precedence: u8) -> String {
+    if matches!(expr, IRExpr::BinOp { .. }) {
+        format!("({})", expression(expr, 0))
+    } else {
+        expression(expr, parent_precedence)
+    }
+}
+
 fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
     let own_precedence = precedence(expr);
     let rendered = match expr {
@@ -65,8 +73,8 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
             };
             format!(
                 "{} {operator} {}",
-                expression(lhs, own_precedence),
-                expression(rhs, own_precedence + 1)
+                binary_operand(lhs, own_precedence),
+                binary_operand(rhs, own_precedence + 1)
             )
         }
         IRExpr::Deref(address) => format!("*({})", expression(address, 0)),
@@ -98,7 +106,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
         IRExpr::CU64(value) => format!("0x{value:x}"),
         IRExpr::Variable(variable) => variable_name(*variable),
         IRExpr::Bool(value) => value.to_string(),
-        IRExpr::Not(inner) => format!("!{}", expression(inner, own_precedence)),
+        IRExpr::Not(inner) => format!("!{}", binary_operand(inner, own_precedence)),
     };
     if own_precedence < parent_precedence {
         format!("({rendered})")

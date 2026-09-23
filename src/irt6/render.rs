@@ -216,6 +216,14 @@ fn binary_operator(kind: &IRBinOpKind) -> &'static str {
     }
 }
 
+fn binary_operand(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> String {
+    if matches!(expr, IRExpr::BinOp { .. }) {
+        format!("({})", expression(expr, 0, types))
+    } else {
+        expression(expr, parent_precedence, types)
+    }
+}
+
 fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> String {
     // MemoryAddress carries the access width; a pointer-typed address needs
     // no cast in the output.
@@ -230,8 +238,8 @@ fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> Stri
             let operator = binary_operator(kind);
             format!(
                 "{} {operator} {}",
-                expression(lhs, own_precedence, types),
-                expression(rhs, own_precedence + 1, types)
+                binary_operand(lhs, own_precedence, types),
+                binary_operand(rhs, own_precedence + 1, types)
             )
         }
         IRExpr::Deref(address) => dereference(address, types),
@@ -265,7 +273,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> Stri
         IRExpr::CU64(value) => format!("0x{value:x}"),
         IRExpr::Variable(variable) => variable_name(*variable),
         IRExpr::Bool(value) => value.to_string(),
-        IRExpr::Not(inner) => format!("!{}", expression(inner, own_precedence, types)),
+        IRExpr::Not(inner) => format!("!{}", binary_operand(inner, own_precedence, types)),
     };
     if own_precedence < parent_precedence {
         format!("({rendered})")
