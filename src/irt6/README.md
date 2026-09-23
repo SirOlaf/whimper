@@ -17,6 +17,10 @@ let mut program = irt6::lift(&tier5);
 let report = irt6::unoptimize::run(&mut program);
 ```
 
+`run` enables assumption-based rewrites by default. Use `run_with_options` with
+`Options { allow_assumptions: false }` to disable them, or pass
+`--no-assumptions` to the command-line example.
+
 `arithmetic.rs` is an auxiliary expression IR. `Context` reads local type
 information; `Value` represents expressions with explicit integer widths and
 canonical sums. The normalizer applies these small algebraic rules:
@@ -69,10 +73,11 @@ operators and renders the replacement as `a op= b`. It also recognizes
 `a = b + a` and `a = b & a` for variable destinations. Memory destinations
 match only the left operand and require a repeatable address expression.
 
-Branch facts prove zero or nonzero strides. Writes invalidate dependent facts;
-only invariant facts enter loop bodies. When the stride is unknown, the rule
-generates a nonzero guard with the original loop on the zero path. This preserves
-nontermination for `s == 0` and keeps a zero divisor out of the remainder.
+Branch facts identify known zero strides. Writes invalidate dependent facts;
+only invariant facts enter loop bodies. A known zero stride prevents recovery.
+Otherwise, the rule assumes a nonzero stride on terminating executions: a zero
+stride would make the matched loop infinite, so no fallback loop is generated.
+With `allow_assumptions` disabled, only a proven nonzero stride can be rewritten.
 
 `effects.rs` provides conservative variable, memory, control-flow, and trapping
 effects shared by the rules. Different pointer expressions do not imply that
@@ -84,4 +89,5 @@ Add algebraic identities to `arithmetic.rs` with explicit width and effect
 conditions. Add control restructuring rules to the rule registry; keep their
 entry, control-flow, and scope proofs local. Add operation recognizers in
 `shapes.rs`, returning the operands and unmet constraints. Reconstruction belongs
-in a rewrite rule and must preserve effects, nontermination, and source metadata.
+in a rewrite rule and must preserve effects and source metadata under its
+documented assumptions.

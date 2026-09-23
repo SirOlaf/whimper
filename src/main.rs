@@ -7,6 +7,7 @@ mod irt5;
 mod irt6;
 
 fn main() {
+    let args = std::env::args().collect::<Vec<_>>();
     const CODE: &[u8] = &[
         0x4c, 0x8b, 0xc1, 0x8b, 0x49, 0x2c, 0x41, 0x03, 0x48, 0x24, 0x41, 0x8b, 0x40, 0x30, 0x41,
         0x01, 0x40, 0x28, 0x4d, 0x8b, 0x48, 0x38, 0x41, 0x8b, 0x40, 0x28, 0x41, 0x89, 0x48, 0x24,
@@ -26,8 +27,17 @@ fn main() {
     let irt4program = irt4::lift(&irt3program);
     let irt5program = irt5::lift(&irt4program);
     let mut irt6program = irt6::lift(&irt5program);
-    let report = irt6::unoptimize::run(&mut irt6program);
-    if std::env::args().any(|arg| arg == "--arithmetic") {
+    let report = if args.iter().any(|arg| arg == "--no-assumptions") {
+        irt6::unoptimize::run_with_options(
+            &mut irt6program,
+            irt6::unoptimize::Options {
+                allow_assumptions: false,
+            },
+        )
+    } else {
+        irt6::unoptimize::run(&mut irt6program)
+    };
+    if args.iter().any(|arg| arg == "--arithmetic") {
         print!("{}\n", report.render());
     }
     print!("{}", irt6::render::render(&irt6program));

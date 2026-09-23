@@ -13,6 +13,20 @@ use super::{
     shapes::{self, LoopAnalysis},
 };
 
+#[derive(Debug, Clone, Copy)]
+pub struct Options {
+    /// Allow rewrites that rely on assumptions about otherwise unknown values.
+    pub allow_assumptions: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            allow_assumptions: true,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Rewrite {
     pub offset: usize,
@@ -72,7 +86,7 @@ impl Facts {
 
 struct Rule {
     name: &'static str,
-    apply: fn(&mut IRInst, usize, &Context, &Facts) -> Option<usize>,
+    apply: fn(&mut IRInst, usize, &Context, &Facts, &Options) -> Option<usize>,
 }
 
 const RULES: &[Rule] = &[
@@ -95,6 +109,7 @@ fn recover_compound_assignment(
     offset: usize,
     _context: &Context,
     _facts: &Facts,
+    _options: &Options,
 ) -> Option<usize> {
     let shape = shapes::compound_assignment(instr)?;
     *instr = IRInst::CompoundAssign {
@@ -110,6 +125,7 @@ fn rotate_guarded_loop(
     _offset: usize,
     context: &Context,
     _facts: &Facts,
+    _options: &Options,
 ) -> Option<usize> {
     let IRInst::If {
         condition,
@@ -186,40 +202,28 @@ fn recover_remainder(
     _offset: usize,
     context: &Context,
     facts: &Facts,
+    options: &Options,
 ) -> Option<usize> {
     let analysis = shapes::analyze(instr, context)?;
     let shape = analysis.subtraction?;
-    if !shape.blockers.is_empty() || facts.is_zero(&shape.stride) == Some(true) {
+    if !shape.blockers.is_empty() {
         return None;
     }
-    let replacement = IRInst::AssignVariable {
+    match facts.is_zero(&shape.stride) {
+        Some(true) => return None,
+        None if !options.allow_assumptions => return None,
+        _ => {}
+    }
+    // A zero stride makes this matched loop nonterminating. Recover the
+    // operation for terminating executions, where the stride is nonzero.
+    *instr = IRInst::AssignVariable {
         variable: shape.accumulator,
         value: IRExpr::BinOp {
             kind: IRBinOpKind::UnsignedMod,
             lhs: Box::new(IRExpr::Variable(shape.accumulator)),
-            rhs: Box::new(shape.stride_source.clone()),
+            rhs: Box::new(shape.stride_source),
         },
     };
-    if facts.is_zero(&shape.stride) == Some(false) {
-        *instr = replacement;
-    } else {
-        // x >= 0 makes the original zero-stride loop nonterminating. Preserve
-        // it explicitly instead of introducing a divide-by-zero trap or exit.
-        let original = std::mem::replace(instr, IRInst::End);
-        *instr = IRInst::If {
-            condition: IRExpr::BinOp {
-                kind: IRBinOpKind::Ne,
-                lhs: Box::new(shape.stride_source),
-                rhs: Box::new(match shape.bits {
-                    8 => IRExpr::CU8(0),
-                    16 | 32 => IRExpr::CU32(0),
-                    _ => IRExpr::CU64(0),
-                }),
-            },
-            then_branch: vec![replacement],
-            else_branch: vec![original],
-        };
-    }
     Some(analysis.offset)
 }
 
@@ -230,10 +234,11 @@ fn sequence<'a>(
     instructions: impl Iterator<Item = (usize, &'a mut IRInst)>,
     context: &Context,
     mut facts: Facts,
+    options: &Options,
     report: &mut Report,
 ) {
     for (offset, instr) in instructions {
-        rewrite(instr, offset, context, &facts, report);
+        rewrite(instr, offset, context, &facts, options, report);
         let mut effects = Effects::default();
         effects.instruction(instr);
         facts.invalidate(&effects);
@@ -245,6 +250,7 @@ fn rewrite(
     offset: usize,
     context: &Context,
     facts: &Facts,
+    options: &Options,
     report: &mut Report,
 ) {
     for round in 0..MAX_LOCAL_ROUNDS {
@@ -254,7 +260,7 @@ fn rewrite(
         }
         let mut changed = false;
         for rule in RULES {
-            if let Some(offset) = (rule.apply)(instr, offset, context, facts) {
+            if let Some(offset) = (rule.apply)(instr, offset, context, facts, options) {
                 report.rewrites.push(Rewrite {
                     offset,
                     rule: rule.name,
@@ -284,12 +290,14 @@ fn rewrite(
                 then_branch.iter_mut().map(|instr| (offset, instr)),
                 context,
                 then_facts,
+                options,
                 report,
             );
             sequence(
                 else_branch.iter_mut().map(|instr| (offset, instr)),
                 context,
                 else_facts,
+                options,
                 report,
             );
         }
@@ -304,6 +312,7 @@ fn rewrite(
                 body.iter_mut().map(|(offset, instr)| (*offset, instr)),
                 context,
                 invariants,
+                options,
                 report,
             );
         }
@@ -335,6 +344,10 @@ fn collect(instr: &IRInst, context: &Context, output: &mut Vec<LoopAnalysis>) {
 }
 
 pub fn run(program: &mut Program) -> Report {
+    run_with_options(program, Options::default())
+}
+
+pub fn run_with_options(program: &mut Program, options: Options) -> Report {
     let mut report = Report::default();
     for function in &mut program.functions {
         let context = Context::from_function(function);
@@ -348,6 +361,7 @@ pub fn run(program: &mut Program) -> Report {
                 .map(|(offset, instr)| (*offset, instr)),
             &context,
             Facts::default(),
+            &options,
             &mut report,
         );
         for (_, instr) in &function.body {
@@ -382,11 +396,7 @@ impl Report {
                         writeln!(output, "//   blocked: {blocker}").unwrap();
                     }
                     if shape.blockers.is_empty() {
-                        writeln!(
-                            output,
-                            "//   requires a nonzero stride; zero paths retain the loop"
-                        )
-                        .unwrap();
+                        writeln!(output, "//   unknown strides require allow_assumptions").unwrap();
                     }
                 } else {
                     writeln!(output, "//   no registered arithmetic shape").unwrap();
