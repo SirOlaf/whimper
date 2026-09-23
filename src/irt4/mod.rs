@@ -2,6 +2,7 @@ mod eliminate_aliases;
 mod inline_loop_conditions;
 pub mod ir;
 pub mod render;
+mod simplify_binary_operations;
 mod variable_flow;
 
 use crate::irt3::ir as t3;
@@ -381,5 +382,6 @@ pub fn lift(source: &t3::Program) -> Program {
     };
     eliminate_aliases::run(&mut program);
     inline_loop_conditions::run(&mut program);
+    simplify_binary_operations::run(&mut program);
     program
 }
