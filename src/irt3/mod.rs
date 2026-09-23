@@ -4,6 +4,7 @@ pub mod inline_trivial_loops;
 pub mod inline_variables;
 pub mod ir;
 pub mod render;
+mod return_slots;
 
 use crate::irt2::ir as t2;
 
@@ -165,5 +166,5 @@ pub fn lift(source: &t2::Program) -> Program {
     };
     let program = inline_trivial_loops::tr(program);
     let program = inline_variables::tr(program);
-    inline_functions::tr(program)
+    return_slots::tr(inline_functions::tr(program))
 }

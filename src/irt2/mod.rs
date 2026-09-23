@@ -219,10 +219,6 @@ impl FunctionLifter {
                     t1::IRExpr::Reg(register) => Some(register.size()),
                     _ => source_width(src),
                 };
-                let source_register = match src {
-                    t1::IRExpr::Reg(register) => Some(*register),
-                    _ => None,
-                };
                 let src = self.expr(src, width, &mut before);
                 match dest {
                     t1::IRExpr::Reg(register) => {
@@ -239,10 +235,9 @@ impl FunctionLifter {
                             size: width,
                         };
                         if !global {
-                            let ty = source_register
-                                .map(VariableType::Register)
-                                .unwrap_or(VariableType::Unknown(width));
-                            let variable = self.slot(ty);
+                            // This slot stages a memory store. Even if its source
+                            // is a register, it is not a machine register write.
+                            let variable = self.slot(VariableType::Unknown(width));
                             before.push(IRInst::AssignVariable {
                                 variable,
                                 value: src,
