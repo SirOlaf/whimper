@@ -165,8 +165,11 @@ impl Context {
                     IRBinOpKind::Eq
                         | IRBinOpKind::Ne
                         | IRBinOpKind::SignedGt
+                        | IRBinOpKind::SignedLe
                         | IRBinOpKind::UnsignedLt
                         | IRBinOpKind::UnsignedGe
+                        | IRBinOpKind::LogicalAnd
+                        | IRBinOpKind::Or
                 );
                 // Infer the result width from operands even for effectful
                 // operations, but preserve their original evaluation intact.
@@ -278,9 +281,25 @@ impl Value {
         match self.kind {
             Kind::Not(inner) => *inner,
             Kind::Binary { kind, lhs, rhs } => {
+                if matches!(kind, IRBinOpKind::Or | IRBinOpKind::LogicalAnd) {
+                    return Self {
+                        bits: Some(1),
+                        kind: Kind::Binary {
+                            kind: if kind == IRBinOpKind::Or {
+                                IRBinOpKind::LogicalAnd
+                            } else {
+                                IRBinOpKind::Or
+                            },
+                            lhs: Box::new(lhs.negated()),
+                            rhs: Box::new(rhs.negated()),
+                        },
+                    };
+                }
                 let opposite = match kind {
                     IRBinOpKind::Eq => Some(IRBinOpKind::Ne),
                     IRBinOpKind::Ne => Some(IRBinOpKind::Eq),
+                    IRBinOpKind::SignedGt => Some(IRBinOpKind::SignedLe),
+                    IRBinOpKind::SignedLe => Some(IRBinOpKind::SignedGt),
                     IRBinOpKind::UnsignedLt => Some(IRBinOpKind::UnsignedGe),
                     IRBinOpKind::UnsignedGe => Some(IRBinOpKind::UnsignedLt),
                     _ => None,

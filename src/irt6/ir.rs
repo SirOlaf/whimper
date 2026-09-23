@@ -87,9 +87,14 @@ pub enum IRBinOpKind {
     UnsignedMod,
     Shl,
     And,
+    /// Short-circuit Boolean conjunction, distinct from bitwise And.
+    LogicalAnd,
+    /// Short-circuit Boolean disjunction.
     Or,
     Eq,
     SignedGt,
+    /// Signed less than or equal, recovered by negating SignedGt.
+    SignedLe,
     Ne,
     UnsignedLt,
     UnsignedGe,

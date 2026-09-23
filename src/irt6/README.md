@@ -86,6 +86,12 @@ and one with a return of the condition's boolean value or its negation. The
 constants must have the same width. The condition is still evaluated once,
 including any memory reads it performs.
 
+The De Morgan rule pushes a negation through chained logical `||` and `&&`
+expressions. Tier 6 represents logical `&&` separately from bitwise `&`, so
+short-circuit evaluation and operand order remain intact. The rule also flips
+comparisons when their exact complement is available, such as signed `>` to
+signed `<=`.
+
 Branch facts identify known zero strides. Writes invalidate dependent facts;
 only invariant facts enter loop bodies. A known zero stride prevents recovery.
 Otherwise, the rule assumes a nonzero stride on terminating executions: a zero

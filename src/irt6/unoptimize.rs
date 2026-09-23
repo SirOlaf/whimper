@@ -213,7 +213,89 @@ const RULES: &[Rule] = &[
         name: "compound-assignment",
         apply: recover_compound_assignment,
     },
+    Rule {
+        name: "de-morgan",
+        apply: simplify_boolean_chains,
+    },
 ];
+
+fn simplify_boolean_expression(expr: &mut IRExpr) -> bool {
+    let mut changed = match expr {
+        IRExpr::BinOp { lhs, rhs, .. } => {
+            let left_changed = simplify_boolean_expression(lhs);
+            let right_changed = simplify_boolean_expression(rhs);
+            left_changed || right_changed
+        }
+        IRExpr::ReplaceBytes {
+            original, value, ..
+        } => {
+            let original_changed = simplify_boolean_expression(original);
+            let value_changed = simplify_boolean_expression(value);
+            original_changed || value_changed
+        }
+        IRExpr::Deref(inner)
+        | IRExpr::MemoryAddress { address: inner, .. }
+        | IRExpr::ExtractBytes { value: inner, .. }
+        | IRExpr::ZeroExtend { value: inner, .. }
+        | IRExpr::Not(inner) => simplify_boolean_expression(inner),
+        IRExpr::Argument(_)
+        | IRExpr::CU8(_)
+        | IRExpr::CU32(_)
+        | IRExpr::CU64(_)
+        | IRExpr::Variable(_)
+        | IRExpr::Bool(_) => false,
+    };
+    if let Some(replacement) = shapes::de_morgan(expr) {
+        *expr = replacement;
+        changed = true;
+    }
+    changed
+}
+
+fn simplify_boolean_chains(
+    instr: &mut IRInst,
+    offset: usize,
+    _context: &Context,
+    _facts: &Facts,
+    _options: &Options,
+) -> Option<usize> {
+    let changed = match instr {
+        IRInst::Assign { dest, src } => {
+            let dest_changed = simplify_boolean_expression(dest);
+            let src_changed = simplify_boolean_expression(src);
+            dest_changed || src_changed
+        }
+        IRInst::CompoundAssign { dest, value, .. } => {
+            let dest_changed = simplify_boolean_expression(dest);
+            let value_changed = simplify_boolean_expression(value);
+            dest_changed || value_changed
+        }
+        IRInst::Return(Some(value))
+        | IRInst::DeclareAndAssignVariable { value, .. }
+        | IRInst::AssignVariable { value, .. }
+        | IRInst::Jump(value)
+        | IRInst::LoadVariable { address: value, .. }
+        | IRInst::StoreVariable { address: value, .. } => simplify_boolean_expression(value),
+        IRInst::If { condition, .. } => simplify_boolean_expression(condition),
+        IRInst::While { condition, .. } => {
+            let (LoopCondition::Before { expression, .. }
+            | LoopCondition::After { expression, .. }) = condition;
+            simplify_boolean_expression(expression)
+        }
+        IRInst::CallSynthetic { arguments, .. } => {
+            arguments.iter_mut().fold(false, |changed, argument| {
+                simplify_boolean_expression(argument) || changed
+            })
+        }
+        IRInst::Return(None)
+        | IRInst::DeclareVariable { .. }
+        | IRInst::Break
+        | IRInst::Continue
+        | IRInst::ContinueLoop(_)
+        | IRInst::End => false,
+    };
+    changed.then_some(offset)
+}
 
 fn recover_boolean_return(
     instr: &mut IRInst,

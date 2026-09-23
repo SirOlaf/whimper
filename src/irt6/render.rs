@@ -165,30 +165,36 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 1,
         IRExpr::BinOp {
-            kind: IRBinOpKind::And,
+            kind: IRBinOpKind::LogicalAnd,
             ..
         } => 2,
         IRExpr::BinOp {
-            kind: IRBinOpKind::Eq | IRBinOpKind::Ne,
+            kind: IRBinOpKind::And,
             ..
         } => 3,
         IRExpr::BinOp {
-            kind: IRBinOpKind::SignedGt
-                | IRBinOpKind::UnsignedLt
-                | IRBinOpKind::UnsignedGe,
+            kind: IRBinOpKind::Eq | IRBinOpKind::Ne,
             ..
         } => 4,
         IRExpr::BinOp {
-            kind: IRBinOpKind::Shl,
+            kind:
+                IRBinOpKind::SignedGt
+                | IRBinOpKind::SignedLe
+                | IRBinOpKind::UnsignedLt
+                | IRBinOpKind::UnsignedGe,
             ..
         } => 5,
         IRExpr::BinOp {
+            kind: IRBinOpKind::Shl,
+            ..
+        } => 6,
+        IRExpr::BinOp {
             kind: IRBinOpKind::UnsignedMod,
             ..
-        } => 7,
-        IRExpr::BinOp { .. } => 6,
-        IRExpr::Not(..) | IRExpr::Deref(..) | IRExpr::MemoryAddress { .. } => 8,
-        _ => 9,
+        } => 8,
+        IRExpr::BinOp { .. } => 7,
+        IRExpr::Not(..) | IRExpr::Deref(..) | IRExpr::MemoryAddress { .. } => 9,
+        _ => 10,
     }
 }
 
@@ -199,9 +205,11 @@ fn binary_operator(kind: &IRBinOpKind) -> &'static str {
         IRBinOpKind::UnsignedMod => "u%",
         IRBinOpKind::Shl => "<<",
         IRBinOpKind::And => "&",
+        IRBinOpKind::LogicalAnd => "&&",
         IRBinOpKind::Or => "||",
         IRBinOpKind::Eq => "===",
         IRBinOpKind::SignedGt => ">",
+        IRBinOpKind::SignedLe => "<=",
         IRBinOpKind::Ne => "!==",
         IRBinOpKind::UnsignedLt => "u<",
         IRBinOpKind::UnsignedGe => "u>=",
