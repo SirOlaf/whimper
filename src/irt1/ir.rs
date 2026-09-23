@@ -25,7 +25,7 @@ pub struct Program {
 #[derive(Debug, Clone)]
 pub struct SyntheticFunction {
     pub entry_offset: usize,
-    /// Register families whose incoming values are used by this function or a callee.
+    /// Register aliases whose low bytes are used by this function or a callee.
     pub parameters: Vec<Register>,
     /// Flags read in this body before this body defines them.
     pub external_flags: HashSet<NativeFlag>,

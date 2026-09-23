@@ -16,9 +16,11 @@ pub struct SyntheticFunction {
 
 #[derive(Debug, Clone)]
 pub enum Parameter {
-    /// An incoming machine register at the true entry point.
+    /// An incoming machine register at the true entry point. The register
+    /// alias carries the width, and its full register identifies the family.
     Native { ordinal: usize, register: Register },
-    /// An incoming register value passed by a synthetic predecessor.
+    /// An incoming register value passed by a synthetic predecessor. The
+    /// register alias carries the width, and its full register identifies the family.
     Slot {
         variable: VariableId,
         register: Register,

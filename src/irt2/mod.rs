@@ -58,6 +58,18 @@ fn register_offset(register: Register) -> usize {
     }
 }
 
+fn widen_register_value(register: Register, value: IRExpr) -> IRExpr {
+    let full = register.full_register();
+    if register.size() == full.size() {
+        value
+    } else {
+        IRExpr::ZeroExtend {
+            value: Box::new(value),
+            size: full.size(),
+        }
+    }
+}
+
 struct FunctionLifter {
     owner: SyntheticFunctionId,
     next_variable: usize,
@@ -131,14 +143,16 @@ impl FunctionLifter {
                 size: 8,
             }
         } else {
-            let original = self.registers.get(&full).unwrap_or_else(|| {
-                panic!(
-                    "tier 1 omitted the preserved bits of {full:?} in fn_{}",
-                    self.owner.id
-                )
-            });
+            let original =
+                self.registers
+                    .get(&full)
+                    .cloned()
+                    .unwrap_or_else(|| IRExpr::ZeroExtend {
+                        value: Box::new(IRExpr::CU8(0)),
+                        size: full.size(),
+                    });
             IRExpr::ReplaceBytes {
-                original: Box::new(original.clone()),
+                original: Box::new(original),
                 value: Box::new(written),
                 offset: register_offset(register),
                 size: register.size(),
@@ -301,18 +315,20 @@ fn lift_function(id: usize, source: &t1::SyntheticFunction, entry: bool) -> Synt
         .enumerate()
         .map(|(index, register)| {
             if entry {
-                lifter
-                    .registers
-                    .insert(register.full_register(), IRExpr::Argument(index + 1));
+                lifter.registers.insert(
+                    register.full_register(),
+                    widen_register_value(*register, IRExpr::Argument(index + 1)),
+                );
                 Parameter::Native {
                     ordinal: index + 1,
                     register: *register,
                 }
             } else {
                 let variable = lifter.variable_id();
-                lifter
-                    .registers
-                    .insert(register.full_register(), IRExpr::Variable(variable));
+                lifter.registers.insert(
+                    register.full_register(),
+                    widen_register_value(*register, IRExpr::Variable(variable)),
+                );
                 Parameter::Slot {
                     variable,
                     register: *register,
