@@ -4,6 +4,7 @@ mod irt2;
 mod irt3;
 mod irt4;
 mod irt5;
+mod irt6;
 
 fn main() {
     const CODE: &[u8] = &[
@@ -24,5 +25,10 @@ fn main() {
     let irt3program = irt3::lift(&irt2program);
     let irt4program = irt4::lift(&irt3program);
     let irt5program = irt5::lift(&irt4program);
-    print!("{}", irt5::render::render(&irt5program));
+    let mut irt6program = irt6::lift(&irt5program);
+    let report = irt6::unoptimize::run(&mut irt6program);
+    if std::env::args().any(|arg| arg == "--arithmetic") {
+        print!("{}\n", report.render());
+    }
+    print!("{}", irt6::render::render(&irt6program));
 }
