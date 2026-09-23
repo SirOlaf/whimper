@@ -46,6 +46,8 @@ pub struct LoopId {
 pub enum VariableType {
     /// A value with an optional known width in bytes.
     Unknown(Option<usize>),
+    /// A pointer whose pointee type has not been recovered.
+    UnknownPointer,
     Bool,
     /// Integer-shaped, with no signedness evidence. Width is in bits.
     Integer(usize),
@@ -75,6 +77,7 @@ pub enum IRExpr {
     /// A byte address explicitly cast to a pointer for a memory operation.
     CastUnknownPtr {
         address: Box<IRExpr>,
+        /// Memory access width in bytes, not the pointee type's size.
         size: Option<usize>,
     },
     Argument(usize),

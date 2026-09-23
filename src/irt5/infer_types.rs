@@ -1,4 +1,4 @@
-//! Infer integer slots only from operations whose shape supplies integer evidence.
+//! Infer integer and pointer slots only from operations with decisive shapes.
 //! Copies and synthetic calls carry that evidence across slots of equal width.
 
 use std::collections::HashMap;
@@ -21,11 +21,19 @@ struct Evidence {
     address: bool,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct PointerUse {
+    dereferenced: bool,
+    other: bool,
+}
+
 #[derive(Default)]
 struct Analysis {
     types: HashMap<Slot, VariableType>,
     evidence: HashMap<Slot, Evidence>,
     copies: Vec<(Slot, Slot)>,
+    pointer_uses: HashMap<Slot, PointerUse>,
+    derived_addresses: Vec<(Slot, Slot)>,
 }
 
 fn direct_slot(expr: &IRExpr, owner: SyntheticFunctionId) -> Option<Slot> {
@@ -69,6 +77,120 @@ impl Analysis {
         if self.width(dest).is_some() && self.width(dest) == self.width(src) {
             self.copies.push((dest, src));
         }
+    }
+
+    fn pointer_use(&mut self, slot: Slot, dereferenced: bool) {
+        let uses = self.pointer_uses.entry(slot).or_default();
+        uses.dereferenced |= dereferenced;
+        uses.other |= !dereferenced;
+    }
+
+    // An offset must have its own integer shape. Two unknown operands of an
+    // addition do not identify which one is the address base.
+    fn integer_offset(&self, expr: &IRExpr, owner: SyntheticFunctionId) -> bool {
+        if literal_size(expr).is_some() {
+            return true;
+        }
+        if let Some(slot) = direct_slot(expr, owner) {
+            let original = self.types.get(&slot).copied();
+            return original.is_some_and(|ty| {
+                matches!(
+                    self.inferred(slot, ty),
+                    VariableType::Integer(_) | VariableType::UnsignedInteger(_)
+                )
+            });
+        }
+        match expr {
+            IRExpr::BinOp {
+                kind: IRBinOpKind::Add | IRBinOpKind::Sub | IRBinOpKind::Shl,
+                lhs,
+                rhs,
+            } => self.integer_offset(lhs, owner) && self.integer_offset(rhs, owner),
+            _ => false,
+        }
+    }
+
+    fn address_base<'a>(
+        &self,
+        expr: &'a IRExpr,
+        owner: SyntheticFunctionId,
+    ) -> Option<(&'a IRExpr, &'a IRExpr)> {
+        let IRExpr::BinOp {
+            kind: IRBinOpKind::Add,
+            lhs,
+            rhs,
+        } = expr
+        else {
+            return None;
+        };
+        match (
+            self.integer_offset(lhs, owner),
+            self.integer_offset(rhs, owner),
+        ) {
+            (false, true) => Some((lhs, rhs)),
+            (true, false) => Some((rhs, lhs)),
+            _ => None,
+        }
+    }
+
+    fn pointer_address(&mut self, expr: &IRExpr, owner: SyntheticFunctionId) {
+        match expr {
+            IRExpr::CastUnknownPtr { address, .. } => self.pointer_address(address, owner),
+            _ => {
+                if let Some(slot) = direct_slot(expr, owner) {
+                    self.pointer_use(slot, true);
+                } else if let Some((base, offset)) = self.address_base(expr, owner) {
+                    self.pointer_address(base, owner);
+                    self.pointer_value(offset, owner);
+                } else {
+                    self.pointer_value(expr, owner);
+                }
+            }
+        }
+    }
+
+    fn pointer_value(&mut self, expr: &IRExpr, owner: SyntheticFunctionId) {
+        if let Some(slot) = direct_slot(expr, owner) {
+            self.pointer_use(slot, false);
+            return;
+        }
+        match expr {
+            IRExpr::Deref(address) => self.pointer_address(address, owner),
+            IRExpr::BinOp { lhs, rhs, .. } => {
+                self.pointer_value(lhs, owner);
+                self.pointer_value(rhs, owner);
+            }
+            IRExpr::ReplaceBytes {
+                original, value, ..
+            } => {
+                self.pointer_value(original, owner);
+                self.pointer_value(value, owner);
+            }
+            IRExpr::CastUnknownPtr { address: value, .. }
+            | IRExpr::ExtractBytes { value, .. }
+            | IRExpr::ZeroExtend { value, .. }
+            | IRExpr::Not(value) => self.pointer_value(value, owner),
+            IRExpr::CU8(_) | IRExpr::CU32(_) | IRExpr::CU64(_) | IRExpr::Bool(_) => {}
+            IRExpr::Argument(_) | IRExpr::Variable(_) => unreachable!(),
+        }
+    }
+
+    fn pointer_assignment(&mut self, dest: Slot, value: &IRExpr, owner: SyntheticFunctionId) {
+        if let Some(src) = direct_slot(value, owner) {
+            if self.width(dest).is_some() && self.width(dest) == self.width(src) {
+                return; // Exact copies are accounted for by the copy graph.
+            }
+        }
+        if self.width(dest) == Some(8)
+            && let Some((base, offset)) = self.address_base(value, owner)
+            && let Some(src) = direct_slot(base, owner)
+            && self.width(src) == Some(8)
+        {
+            self.derived_addresses.push((dest, src));
+            self.pointer_value(offset, owner);
+            return;
+        }
+        self.pointer_value(value, owner);
     }
 
     fn address(&mut self, expr: &IRExpr, owner: SyntheticFunctionId) {
@@ -222,6 +344,176 @@ impl Analysis {
         }
     }
 
+    fn pointer_instruction(
+        &mut self,
+        instr: &IRInst,
+        owner: SyntheticFunctionId,
+        program: &Program,
+    ) {
+        match instr {
+            IRInst::DeclareVariable { .. } => {}
+            IRInst::Assign { dest, src } => {
+                if let Some(slot) = direct_slot(dest, owner) {
+                    self.pointer_assignment(slot, src, owner);
+                } else {
+                    self.pointer_value(dest, owner);
+                    self.pointer_value(src, owner);
+                }
+            }
+            IRInst::AssignVariable { variable, value } => {
+                self.pointer_assignment(Slot::Variable(*variable), value, owner);
+            }
+            IRInst::LoadVariable { address, .. } => {
+                self.pointer_address(address, owner);
+            }
+            IRInst::StoreVariable { address, variable } => {
+                self.pointer_address(address, owner);
+                self.pointer_use(Slot::Variable(*variable), false);
+            }
+            IRInst::Return(Some(value)) | IRInst::Jump(value) => {
+                self.pointer_value(value, owner);
+            }
+            IRInst::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.pointer_value(condition, owner);
+                for instr in then_branch.iter().chain(else_branch) {
+                    self.pointer_instruction(instr, owner, program);
+                }
+            }
+            IRInst::While {
+                condition, body, ..
+            } => {
+                match condition {
+                    LoopCondition::Before { expression, .. }
+                    | LoopCondition::After { expression, .. } => {
+                        self.pointer_value(expression, owner)
+                    }
+                }
+                for (_, instr) in body {
+                    self.pointer_instruction(instr, owner, program);
+                }
+            }
+            IRInst::CallSynthetic {
+                function,
+                arguments,
+            } => {
+                let callee = program.functions.get(function.id);
+                for (index, argument) in arguments.iter().enumerate() {
+                    if let Some(parameter) = callee.and_then(|callee| callee.parameters.get(index))
+                    {
+                        let dest = match parameter {
+                            Parameter::Argument { ordinal, .. } => {
+                                Slot::Argument(*function, *ordinal)
+                            }
+                            Parameter::Slot { variable, .. } => Slot::Variable(*variable),
+                        };
+                        self.pointer_assignment(dest, argument, owner);
+                    } else {
+                        self.pointer_value(argument, owner);
+                    }
+                }
+            }
+            IRInst::Return(None)
+            | IRInst::Break
+            | IRInst::Continue
+            | IRInst::ContinueLoop(_)
+            | IRInst::End => {}
+        }
+    }
+
+    fn propagate_pointer_uses(&mut self) {
+        // A derived address transfers pointer evidence from its dereferenced
+        // result to its base. All other uses of either copy are shared.
+        loop {
+            let mut changed = false;
+            for &(dest, src) in &self.copies {
+                let left = self.pointer_uses.get(&dest).copied().unwrap_or_default();
+                let right = self.pointer_uses.get(&src).copied().unwrap_or_default();
+                let merged = PointerUse {
+                    dereferenced: left.dereferenced || right.dereferenced,
+                    other: left.other || right.other,
+                };
+                for slot in [dest, src] {
+                    if self.pointer_uses.insert(slot, merged) != Some(merged) {
+                        changed = true;
+                    }
+                }
+            }
+            for &(dest, base) in &self.derived_addresses {
+                let result = self.pointer_uses.get(&dest).copied().unwrap_or_default();
+                let uses = self.pointer_uses.entry(base).or_default();
+                if result.dereferenced && !uses.dereferenced {
+                    uses.dereferenced = true;
+                    changed = true;
+                }
+                // A derived value used for anything other than an address
+                // makes the base ambiguous as well.
+                if result.other && !uses.other {
+                    uses.other = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        // An addition whose result is never used as an address is an ordinary
+        // arithmetic use of its base. Propagate that disqualification through
+        // copies and earlier derived addresses.
+        for &(dest, base) in &self.derived_addresses {
+            if !self
+                .pointer_uses
+                .get(&dest)
+                .is_some_and(|uses| uses.dereferenced)
+            {
+                self.pointer_uses.entry(base).or_default().other = true;
+            }
+        }
+        loop {
+            let mut changed = false;
+            for &(dest, src) in &self.copies {
+                if self.pointer_uses.get(&dest).is_some_and(|uses| uses.other)
+                    || self.pointer_uses.get(&src).is_some_and(|uses| uses.other)
+                {
+                    for slot in [dest, src] {
+                        let uses = self.pointer_uses.entry(slot).or_default();
+                        changed |= !uses.other;
+                        uses.other = true;
+                    }
+                }
+            }
+            for &(dest, base) in &self.derived_addresses {
+                if self.pointer_uses.get(&dest).is_some_and(|uses| uses.other) {
+                    let uses = self.pointer_uses.entry(base).or_default();
+                    changed |= !uses.other;
+                    uses.other = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    fn inferred_pointer(&self, slot: Slot, original: VariableType) -> VariableType {
+        if original != VariableType::Unknown(Some(8)) {
+            return original;
+        }
+        let uses = self.pointer_uses.get(&slot).copied().unwrap_or_default();
+        let integer = self
+            .evidence
+            .get(&slot)
+            .is_some_and(|evidence| evidence.integer);
+        if uses.dereferenced && !uses.other && !integer {
+            VariableType::UnknownPointer
+        } else {
+            original
+        }
+    }
+
     fn propagate(&mut self) {
         // Exact copies have the same bit pattern. A pointer-shaped member
         // makes the whole copy group ineligible for integer retyping.
@@ -269,7 +561,8 @@ impl Analysis {
 fn retype(instr: &mut IRInst, analysis: &Analysis) {
     match instr {
         IRInst::DeclareVariable { variable, ty } => {
-            *ty = analysis.inferred(Slot::Variable(*variable), *ty);
+            let slot = Slot::Variable(*variable);
+            *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, *ty));
         }
         IRInst::If {
             then_branch,
@@ -385,15 +678,24 @@ pub fn run(program: &mut Program) {
         }
     }
     analysis.propagate();
+    for (index, function) in program.functions.iter().enumerate() {
+        let owner = SyntheticFunctionId { id: index };
+        for (_, instr) in &function.body {
+            analysis.pointer_instruction(instr, owner, program);
+        }
+    }
+    analysis.propagate_pointer_uses();
     for (index, function) in program.functions.iter_mut().enumerate() {
         let owner = SyntheticFunctionId { id: index };
         for parameter in &mut function.parameters {
             match parameter {
                 Parameter::Argument { ordinal, ty } => {
-                    *ty = analysis.inferred(Slot::Argument(owner, *ordinal), *ty);
+                    let slot = Slot::Argument(owner, *ordinal);
+                    *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, *ty));
                 }
                 Parameter::Slot { variable, ty } => {
-                    *ty = analysis.inferred(Slot::Variable(*variable), *ty);
+                    let slot = Slot::Variable(*variable);
+                    *ty = analysis.inferred_pointer(slot, analysis.inferred(slot, *ty));
                 }
             }
         }

@@ -19,6 +19,7 @@ fn type_name(ty: VariableType) -> String {
     match ty {
         VariableType::Unknown(Some(size)) => format!("Unknown<{size}>"),
         VariableType::Unknown(None) => "Unknown".to_string(),
+        VariableType::UnknownPointer => "Unknown*".to_string(),
         VariableType::Bool => "Bool".to_string(),
         VariableType::Integer(bits) => format!("i<{bits}>"),
         VariableType::UnsignedInteger(bits) => format!("u<{bits}>"),
@@ -78,10 +79,9 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
             }
         }
         IRExpr::Deref(address) => format!("*({})", expression(address, 0)),
-        IRExpr::CastUnknownPtr { address, size } => match size {
-            Some(size) => format!("(Unknown<{size}>*)({})", expression(address, 0)),
-            None => format!("(Unknown*)({})", expression(address, 0)),
-        },
+        IRExpr::CastUnknownPtr { address, .. } => {
+            format!("(Unknown*)({})", expression(address, 0))
+        }
         IRExpr::Argument(ordinal) => format!("arg{ordinal}"),
         IRExpr::ExtractBytes {
             value,
