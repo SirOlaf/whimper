@@ -29,7 +29,8 @@ pub struct SyntheticFunctionId {
     pub id: usize,
 }
 
-/// Variable numbers are local to their owning synthetic function.
+/// Variable numbers are assigned densely within each synthetic function
+/// when tier 4 is translated into tier 5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VariableId {
     pub owner: SyntheticFunctionId,
