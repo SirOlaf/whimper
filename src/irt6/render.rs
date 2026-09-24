@@ -83,6 +83,21 @@ impl<'a> RenderTypes<'a> {
         use super::ir::IntegerType;
         match expr {
             IRExpr::Convert { target, .. } => Some(*target),
+            IRExpr::Deref(address)
+                if matches!(
+                    address.as_ref(),
+                    IRExpr::ElementAddress {
+                        base,
+                        element_size: 1,
+                        ..
+                    } if self.direct_type(base) == Some(VariableType::CString)
+                ) =>
+            {
+                Some(IntegerType {
+                    size: 1,
+                    signed: true,
+                })
+            }
             IRExpr::CU8(_) => Some(IntegerType {
                 size: 1,
                 signed: false,

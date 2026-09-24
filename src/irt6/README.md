@@ -102,9 +102,12 @@ only branch that uses it when its declaration is immediately before the `if`.
 Pure initializers can cross the condition. A read of byte zero can also cross
 an equality check against the same CString's length: that check necessarily
 reads byte zero on either outcome. Other memory reads and trapping expressions
-stay in place. `eliminate_variables.rs` then folds a single-use local into an
-adjacent copy with the same type, preserving the initializer's evaluation
-point and leaving loop-carried variables intact.
+stay in place. `eliminate_variables.rs` folds a single-use local into an
+adjacent copy of the same type or a width-matched conversion, preserving the
+initializer's evaluation point. It also recognizes a loop element copied to
+a byte local solely for the next accumulator update. When the local has no
+other uses after that update, the accumulator reads the element directly;
+the local's initial value can then be folded into the adjacent conversion.
 
 The boolean-return rule replaces an `if` whose two branches only return zero
 and one with a return of the condition's boolean value or its negation. The
