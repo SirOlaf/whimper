@@ -211,6 +211,21 @@ fn type_name(ty: VariableType, structs: &[StructDefinition]) -> String {
     }
 }
 
+fn declaration_type_is_repeated_by_cast(ty: &VariableType, value: &IRExpr) -> bool {
+    let IRExpr::Convert { target, .. } = value else {
+        return false;
+    };
+    let Some(bits) = target.size.checked_mul(8) else {
+        return false;
+    };
+
+    match ty {
+        VariableType::Integer(declared_bits) => target.signed && *declared_bits == bits,
+        VariableType::UnsignedInteger(declared_bits) => !target.signed && *declared_bits == bits,
+        _ => false,
+    }
+}
+
 fn dereference(address: &IRExpr, types: &RenderTypes) -> String {
     if let IRExpr::ElementAddress { base, index, .. } = address {
         let index = match index.as_ref() {
@@ -408,14 +423,24 @@ fn instruction(
             ty,
             value,
         } => {
-            let ty = type_name(ty.clone(), types.structs);
-            writeln!(
-                output,
-                "{padding}let {}: {ty} = {};",
-                variable_name(*variable),
-                expression(value, 0, types)
-            )
-            .unwrap();
+            let omit_type = declaration_type_is_repeated_by_cast(ty, value);
+            let value = expression(value, 0, types);
+            if omit_type {
+                writeln!(
+                    output,
+                    "{padding}let {} = {value};",
+                    variable_name(*variable)
+                )
+                .unwrap();
+            } else {
+                let ty = type_name(ty.clone(), types.structs);
+                writeln!(
+                    output,
+                    "{padding}let {}: {ty} = {value};",
+                    variable_name(*variable)
+                )
+                .unwrap();
+            }
         }
         IRInst::AssignVariable { variable, value } => {
             writeln!(
