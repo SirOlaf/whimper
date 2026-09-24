@@ -203,6 +203,18 @@ fn declares_variable(instr: &t3::IRInst) -> bool {
     }
 }
 
+fn contains_loop(instr: &t3::IRInst) -> bool {
+    match instr {
+        t3::IRInst::Loop { .. } => true,
+        t3::IRInst::If {
+            then_branch,
+            else_branch,
+            ..
+        } => then_branch.iter().chain(else_branch).any(contains_loop),
+        _ => false,
+    }
+}
+
 fn lift_branch(body: &[t3::IRInst]) -> Vec<IRInst> {
     body.iter()
         .flat_map(|instr| instructions(0, instr).into_iter().map(|(_, instr)| instr))
@@ -273,10 +285,16 @@ fn loop_instructions(
             }
 
             // Rotation evaluates the original prefix once before the first
-            // check, then after each repeating iteration. A declaration is
-            // kept in place because duplicating its scope changes bindings.
+            // check, then after each repeating iteration. Do not copy nested
+            // loops: that duplicates large regions of code and makes one
+            // source loop appear as two loops in the rendered function.
+            // Declarations stay in place because duplicating their scope
+            // changes bindings.
             let prefix = &body[..index];
-            if !prefix.iter().any(|(_, instr)| declares_variable(instr)) {
+            if !prefix
+                .iter()
+                .any(|(_, instr)| declares_variable(instr) || contains_loop(instr))
+            {
                 let mut result = lift_body(prefix);
                 let mut loop_body = updates
                     .iter()
