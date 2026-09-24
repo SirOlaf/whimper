@@ -417,6 +417,15 @@ fn lift_arithmetic(x: Instruction, kind: IRBinOpKind) -> Vec<IRInst> {
         lift_op(x, 1)
     };
     let result = bin_op(kind, operand.clone(), rhs);
+    let value = if x.mnemonic() == Mnemonic::Add
+        && x.op_kind(0) == OpKind::Register
+        && x.op_kind(1) == OpKind::Register
+        && x.op_register(0) == x.op_register(1)
+    {
+        bin_op(IRBinOpKind::Mul, operand.clone(), IRExpr::CU8(2))
+    } else {
+        result.clone()
+    };
     let mut flags = HashSet::from([
         NativeFlag::AuxCarry,
         NativeFlag::Overflow,
@@ -431,7 +440,7 @@ fn lift_arithmetic(x: Instruction, kind: IRBinOpKind) -> Vec<IRInst> {
         IRInst::SetFlagsFrom(flags, result.clone()),
         IRInst::Asgn {
             dest: operand,
-            src: result,
+            src: value,
         },
     ]
 }
