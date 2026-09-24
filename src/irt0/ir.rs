@@ -296,6 +296,7 @@ fn lift_mov(x: Instruction) -> Vec<IRInst> {
         Code::Mov_r64_rm64
         | Code::Mov_r32_rm32
         | Code::Mov_rm32_r32
+        | Code::Mov_rm64_r64
         | Code::Mov_r32_imm32
         | Code::Mov_r64_imm64 => {
             vec![IRInst::Asgn {

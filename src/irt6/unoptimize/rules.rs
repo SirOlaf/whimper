@@ -64,6 +64,7 @@ fn simplify_boolean_expression(expr: &mut IRExpr) -> bool {
         | IRExpr::CU32(_)
         | IRExpr::CU64(_)
         | IRExpr::Variable(_)
+        | IRExpr::Data(_)
         | IRExpr::Bool(_) => false,
     };
     if let Some(replacement) = shapes::de_morgan(expr) {

@@ -9,6 +9,7 @@ use super::ir::{IRExpr, IRInst, Parameter, Program, SyntheticFunction, VariableI
 enum Access {
     Read(VariableId),
     Write(VariableId),
+    ReadMemory,
     WriteMemory,
 }
 
@@ -27,6 +28,7 @@ struct Writes {
 fn expression_accesses(expr: &IRExpr, accesses: &mut Vec<Access>) {
     match expr {
         IRExpr::Variable(variable) => accesses.push(Access::Read(*variable)),
+        IRExpr::Data(_) => accesses.push(Access::ReadMemory),
         IRExpr::BinOp { lhs, rhs, .. } => {
             expression_accesses(lhs, accesses);
             expression_accesses(rhs, accesses);
@@ -107,6 +109,7 @@ fn input_reads(expr: &IRExpr, variables: &mut HashSet<VariableId>, memory: &mut 
         IRExpr::Variable(variable) => {
             variables.insert(*variable);
         }
+        IRExpr::Data(_) => *memory = true,
         IRExpr::Deref(address) => {
             *memory = true;
             input_reads(address, variables, memory);
@@ -140,6 +143,7 @@ fn candidate(function: &SyntheticFunction) -> Option<(VariableId, usize, usize, 
                     usage.entry(variable).or_default().writes.push(index);
                     writes.variables.insert(variable);
                 }
+                Access::ReadMemory => {}
                 Access::WriteMemory => writes.memory = true,
             }
         }
@@ -254,6 +258,7 @@ fn replace_expression(expr: &mut IRExpr, variable: VariableId, value: &IRExpr) -
         | IRExpr::CU32(_)
         | IRExpr::CU64(_)
         | IRExpr::Variable(_)
+        | IRExpr::Data(_)
         | IRExpr::Bool(_) => false,
     }
 }

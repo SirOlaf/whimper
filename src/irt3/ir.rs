@@ -4,7 +4,21 @@ use iced_x86::Register;
 pub struct Program {
     pub entry_address: usize,
     pub entry: Option<SyntheticFunctionId>,
+    pub data: Vec<DataVariable>,
     pub functions: Vec<SyntheticFunction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataVariable {
+    pub id: DataId,
+    pub address: u64,
+    pub name: String,
+    pub ty: VariableType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DataId {
+    pub id: u64,
 }
 
 /// One shared partition lifted into a synthetic function.
@@ -114,6 +128,7 @@ pub enum IRExpr {
     CU32(u32),
     CU64(u64),
     Variable(VariableId),
+    Data(DataId),
     Bool(bool),
     Not(Box<IRExpr>),
 }

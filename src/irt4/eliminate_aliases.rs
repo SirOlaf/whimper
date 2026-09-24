@@ -229,6 +229,7 @@ fn replace_expression(expr: &mut IRExpr, target: VariableId, value: &IRExpr) {
         | IRExpr::CU8(_)
         | IRExpr::CU32(_)
         | IRExpr::CU64(_)
+        | IRExpr::Data(_)
         | IRExpr::Variable(_)
         | IRExpr::Bool(_) => {}
     }
@@ -343,6 +344,7 @@ fn retain(body: &mut Vec<IRInst>, target: VariableId) {
 fn effect_free(expr: &IRExpr) -> bool {
     match expr {
         IRExpr::Deref(_) => false,
+        IRExpr::Data(_) => false,
         IRExpr::BinOp { lhs, rhs, .. } => effect_free(lhs) && effect_free(rhs),
         IRExpr::CastUnknownPtr { address, .. }
         | IRExpr::Convert { value: address, .. }

@@ -14,8 +14,9 @@ pub mod unoptimize;
 use crate::irt5::ir as t5;
 
 use self::ir::{
-    IRBinOpKind, IRExpr, IRInst, LoopCondition, LoopId, Parameter, Program, StructDefinition,
-    StructField, StructId, SyntheticFunction, SyntheticFunctionId, VariableId, VariableType,
+    DataId, DataVariable, IRBinOpKind, IRExpr, IRInst, LoopCondition, LoopId, Parameter, Program,
+    StructDefinition, StructField, StructId, SyntheticFunction, SyntheticFunctionId, VariableId,
+    VariableType,
 };
 
 fn function_id(id: t5::SyntheticFunctionId) -> SyntheticFunctionId {
@@ -114,6 +115,7 @@ fn expression(expr: &t5::IRExpr) -> IRExpr {
         t5::IRExpr::CU32(value) => IRExpr::CU32(*value),
         t5::IRExpr::CU64(value) => IRExpr::CU64(*value),
         t5::IRExpr::Variable(variable) => IRExpr::Variable(variable_id(*variable)),
+        t5::IRExpr::Data(id) => IRExpr::Data(DataId { id: id.id }),
         t5::IRExpr::Bool(value) => IRExpr::Bool(*value),
         t5::IRExpr::Not(inner) => IRExpr::Not(Box::new(expression(inner))),
     }
@@ -212,6 +214,16 @@ pub fn lift(source: &t5::Program) -> Program {
     Program {
         entry_address: source.entry_address,
         entry: source.entry.map(function_id),
+        data: source
+            .data
+            .iter()
+            .map(|item| DataVariable {
+                id: DataId { id: item.id.id },
+                address: item.address,
+                name: item.name.clone(),
+                ty: variable_type(item.ty.clone()),
+            })
+            .collect(),
         structs: source
             .structs
             .iter()

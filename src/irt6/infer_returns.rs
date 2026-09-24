@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::effects::Effects;
 use super::ir::{
-    IRBinOpKind, IRExpr, IRInst, Parameter, Program, StructDefinition, SyntheticFunction,
-    SyntheticFunctionId, VariableId, VariableType, field_address,
+    DataId, DataVariable, IRBinOpKind, IRExpr, IRInst, Parameter, Program, StructDefinition,
+    SyntheticFunction, SyntheticFunctionId, VariableId, VariableType, field_address,
 };
 
 #[derive(Clone)]
@@ -64,14 +64,20 @@ impl Value {
 struct Types<'a> {
     arguments: HashMap<usize, VariableType>,
     variables: HashMap<VariableId, VariableType>,
+    data: HashMap<DataId, VariableType>,
     structs: &'a [StructDefinition],
 }
 
 impl<'a> Types<'a> {
-    fn new(function: &SyntheticFunction, structs: &'a [StructDefinition]) -> Self {
+    fn new(
+        function: &SyntheticFunction,
+        structs: &'a [StructDefinition],
+        data: &[DataVariable],
+    ) -> Self {
         let mut types = Self {
             arguments: HashMap::new(),
             variables: HashMap::new(),
+            data: data.iter().map(|item| (item.id, item.ty.clone())).collect(),
             structs,
         };
         for parameter in &function.parameters {
@@ -129,6 +135,7 @@ impl<'a> Types<'a> {
         match expr {
             IRExpr::Argument(ordinal) => self.arguments.get(ordinal).cloned(),
             IRExpr::Variable(variable) => self.variables.get(variable).cloned(),
+            IRExpr::Data(data) => self.data.get(data).cloned(),
             _ => None,
         }
     }
@@ -196,7 +203,9 @@ impl<'a> Types<'a> {
     fn expression(&self, expr: &IRExpr) -> Value {
         use IRBinOpKind::*;
         match expr {
-            IRExpr::Argument(_) | IRExpr::Variable(_) => self.known(self.direct(expr)),
+            IRExpr::Argument(_) | IRExpr::Variable(_) | IRExpr::Data(_) => {
+                self.known(self.direct(expr))
+            }
             IRExpr::CU8(_) => Value::Literal(1),
             IRExpr::CU32(_) => Value::Literal(4),
             IRExpr::CU64(_) => Value::Literal(8),
@@ -291,7 +300,7 @@ fn function_returns(
     let Some(function) = program.functions.get(id.id) else {
         return Some(Value::Unknown);
     };
-    let types = Types::new(function, &program.structs);
+    let types = Types::new(function, &program.structs, &program.data);
     let mut returns = None;
     for (_, instr) in &function.body {
         instruction_returns(instr, &types, program, seen, &mut returns);
@@ -435,7 +444,7 @@ pub fn run(program: &mut Program) {
         if conflicting {
             // Retain each candidate's computation as a local assignment at
             // the original return site, then leave the return value empty.
-            let types = Types::new(function, &program.structs);
+            let types = Types::new(function, &program.structs, &program.data);
             let mut next_id = next_variable_id(function);
             lower_with_offsets(
                 &mut function.body,

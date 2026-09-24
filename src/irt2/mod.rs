@@ -10,8 +10,8 @@ use iced_x86::Register;
 use crate::irt1::ir as t1;
 
 use self::ir::{
-    IRBinOpKind, IRExpr, IRInst, Parameter, Program, SyntheticFunction, SyntheticFunctionId,
-    VariableId, VariableType,
+    DataId, DataVariable, IRBinOpKind, IRExpr, IRInst, Parameter, Program, SyntheticFunction,
+    SyntheticFunctionId, VariableId, VariableType,
 };
 
 fn lift_bin_op(kind: &t1::IRBinOpKind) -> IRBinOpKind {
@@ -29,14 +29,131 @@ fn lift_bin_op(kind: &t1::IRBinOpKind) -> IRBinOpKind {
     }
 }
 
-// Tier 1 emits absolute addresses as constants. Register-derived addresses
-// still need a memory access even when their displacement is constant.
-fn is_global_address(address: &t1::IRExpr) -> bool {
+// Tier 1 emits absolute addresses as constant expressions. Register-derived
+// addresses still need a memory access even when their displacement is constant.
+fn global_address(address: &t1::IRExpr) -> Option<u64> {
     match address {
-        t1::IRExpr::CU8(_) | t1::IRExpr::CU32(_) | t1::IRExpr::CU64(_) => true,
-        t1::IRExpr::BinOp { lhs, rhs, .. } => is_global_address(lhs) && is_global_address(rhs),
-        _ => false,
+        t1::IRExpr::CU8(value) => Some(*value as u64),
+        t1::IRExpr::CU32(value) => Some(*value as u64),
+        t1::IRExpr::CU64(value) => Some(*value),
+        t1::IRExpr::BinOp { kind, lhs, rhs } => {
+            let lhs = global_address(lhs)?;
+            let rhs = global_address(rhs)?;
+            match kind {
+                t1::IRBinOpKind::Add => Some(lhs.wrapping_add(rhs)),
+                t1::IRBinOpKind::Sub => Some(lhs.wrapping_sub(rhs)),
+                t1::IRBinOpKind::Mul => Some(lhs.wrapping_mul(rhs)),
+                _ => None,
+            }
+        }
+        _ => None,
     }
+}
+
+fn collect_data_expr(expr: &t1::IRExpr, data: &mut Vec<(u64, Option<usize>)>) {
+    match expr {
+        t1::IRExpr::Deref { address, size } => {
+            if let Some(address) = global_address(address) {
+                data.push((address, Some(*size)));
+            }
+            collect_data_expr(address, data);
+        }
+        t1::IRExpr::BinOp { lhs, rhs, .. } => {
+            collect_data_expr(lhs, data);
+            collect_data_expr(rhs, data);
+        }
+        t1::IRExpr::ExtractBytes { value, .. }
+        | t1::IRExpr::ZeroExtend { value, .. }
+        | t1::IRExpr::SignExtend { value, .. }
+        | t1::IRExpr::Not(value) => collect_data_expr(value, data),
+        _ => {}
+    }
+}
+
+fn collect_data_inst(instr: &t1::IRInst, data: &mut Vec<(u64, Option<usize>)>) {
+    match instr {
+        t1::IRInst::Assign { dest, src } => {
+            collect_data_expr(dest, data);
+            collect_data_expr(src, data);
+        }
+        t1::IRInst::SetFlagsFrom { expr, .. } => collect_data_expr(expr, data),
+        t1::IRInst::Return(value) => {
+            if let Some(value) = value {
+                collect_data_expr(value, data);
+            }
+        }
+        t1::IRInst::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_data_expr(condition, data);
+            collect_data_inst(then_branch, data);
+            collect_data_inst(else_branch, data);
+        }
+        t1::IRInst::CallSynthetic { arguments, .. } => {
+            for argument in arguments {
+                collect_data_expr(argument, data);
+            }
+        }
+        t1::IRInst::Jump(target) => collect_data_expr(target, data),
+        t1::IRInst::ClearFlags { .. }
+        | t1::IRInst::InvalidateFlags { .. }
+        | t1::IRInst::DeclareVariable { .. }
+        | t1::IRInst::AssignVariable { .. }
+        | t1::IRInst::End => {}
+    }
+}
+
+fn collect_data(
+    source: &t1::Program,
+) -> (
+    Vec<DataVariable>,
+    HashMap<u64, DataId>,
+    HashMap<DataId, usize>,
+) {
+    let mut accesses = Vec::new();
+    for function in &source.functions {
+        for (_, instr) in &function.body {
+            collect_data_inst(instr, &mut accesses);
+        }
+    }
+    let mut data = Vec::<DataVariable>::new();
+    let mut ids = HashMap::new();
+    let mut widths = HashMap::new();
+    for (address, size) in accesses {
+        let id = *ids.entry(address).or_insert_with(|| {
+            let id = DataId { id: address };
+            data.push(DataVariable {
+                id,
+                address,
+                name: format!("data_{address:x}"),
+                ty: VariableType::Unknown(size),
+            });
+            id
+        });
+        let index = id_index(&data, id);
+        let item = &mut data[index];
+        if item.ty != VariableType::Unknown(size) {
+            item.ty = VariableType::Unknown(None);
+        }
+        if let Some(size) = size {
+            widths
+                .entry(id)
+                .and_modify(|known| {
+                    if *known != size {
+                        *known = 0;
+                    }
+                })
+                .or_insert(size);
+        }
+    }
+    widths.retain(|_, size| *size != 0);
+    (data, ids, widths)
+}
+
+fn id_index(data: &[DataVariable], id: DataId) -> usize {
+    data.iter().position(|item| item.id == id).unwrap()
 }
 
 fn register_offset(register: Register) -> usize {
@@ -59,10 +176,16 @@ struct FunctionLifter {
     registers: HashMap<Register, IRExpr>,
     widths: HashMap<VariableId, usize>,
     argument_widths: HashMap<usize, usize>,
+    data_ids: HashMap<u64, DataId>,
+    data_widths: HashMap<DataId, usize>,
 }
 
 impl FunctionLifter {
-    fn new(owner: SyntheticFunctionId) -> Self {
+    fn new(
+        owner: SyntheticFunctionId,
+        data_ids: HashMap<u64, DataId>,
+        data_widths: HashMap<DataId, usize>,
+    ) -> Self {
         Self {
             owner,
             next_variable: 0,
@@ -71,6 +194,8 @@ impl FunctionLifter {
             registers: HashMap::new(),
             widths: HashMap::new(),
             argument_widths: HashMap::new(),
+            data_ids,
+            data_widths,
         }
     }
 
@@ -98,7 +223,12 @@ impl FunctionLifter {
     }
 
     fn width(&self, value: &IRExpr) -> Option<usize> {
-        values::width(value, &self.widths, &self.argument_widths)
+        values::width(
+            value,
+            &self.widths,
+            &self.argument_widths,
+            &self.data_widths,
+        )
     }
 
     fn extract(&self, value: IRExpr, offset: usize, size: usize) -> IRExpr {
@@ -219,19 +349,17 @@ impl FunctionLifter {
             }
             t1::IRExpr::Deref { address, size } => {
                 let width = Some(*size);
-                let global = is_global_address(address);
+                if let Some(address) = global_address(address) {
+                    return IRExpr::Data(self.data_ids[&address]);
+                }
                 let address = IRExpr::CastUnknownPtr {
                     address: Box::new(self.expr(address, before)),
                     size: width,
                 };
-                if global {
-                    IRExpr::Deref(Box::new(address))
-                } else {
-                    // Keep repeated accesses distinct across stores and calls.
-                    let variable = self.slot(VariableType::Unknown(width));
-                    before.push(IRInst::LoadVariable { variable, address });
-                    IRExpr::Variable(variable)
-                }
+                // Keep repeated accesses distinct across stores and calls.
+                let variable = self.slot(VariableType::Unknown(width));
+                before.push(IRInst::LoadVariable { variable, address });
+                IRExpr::Variable(variable)
             }
             t1::IRExpr::Reg(register) => self.read_register(*register),
             t1::IRExpr::CU8(value) => IRExpr::CU8(*value),
@@ -267,16 +395,23 @@ impl FunctionLifter {
                     }
                     t1::IRExpr::Deref { address, size } => {
                         let width = Some(*size);
-                        let address = IRExpr::CastUnknownPtr {
-                            address: Box::new(self.expr(address, &mut before)),
-                            size: width,
-                        };
-                        if let IRExpr::Variable(variable) = src {
-                            IRInst::StoreVariable { address, variable }
-                        } else {
+                        if let Some(address) = global_address(address) {
                             IRInst::Assign {
-                                dest: IRExpr::Deref(Box::new(address)),
+                                dest: IRExpr::Data(self.data_ids[&address]),
                                 src,
+                            }
+                        } else {
+                            let address = IRExpr::CastUnknownPtr {
+                                address: Box::new(self.expr(address, &mut before)),
+                                size: width,
+                            };
+                            if let IRExpr::Variable(variable) = src {
+                                IRInst::StoreVariable { address, variable }
+                            } else {
+                                IRInst::Assign {
+                                    dest: IRExpr::Deref(Box::new(address)),
+                                    src,
+                                }
                             }
                         }
                     }
@@ -322,9 +457,15 @@ impl FunctionLifter {
     }
 }
 
-fn lift_function(id: usize, source: &t1::SyntheticFunction, entry: bool) -> SyntheticFunction {
+fn lift_function(
+    id: usize,
+    source: &t1::SyntheticFunction,
+    entry: bool,
+    data_ids: HashMap<u64, DataId>,
+    data_widths: HashMap<DataId, usize>,
+) -> SyntheticFunction {
     let owner = SyntheticFunctionId { id };
-    let mut lifter = FunctionLifter::new(owner);
+    let mut lifter = FunctionLifter::new(owner, data_ids, data_widths);
 
     let parameters = source
         .parameters
@@ -388,6 +529,7 @@ fn lift_function(id: usize, source: &t1::SyntheticFunction, entry: bool) -> Synt
 }
 
 pub fn lift(source: &t1::Program) -> Program {
+    let (data, data_ids, data_widths) = collect_data(source);
     let mut program = Program {
         entry_address: source.entry_address,
         entry: source
@@ -398,9 +540,16 @@ pub fn lift(source: &t1::Program) -> Program {
             .iter()
             .enumerate()
             .map(|(id, function)| {
-                lift_function(id, function, source.entry.is_some_and(|e| e.id == id))
+                lift_function(
+                    id,
+                    function,
+                    source.entry.is_some_and(|e| e.id == id),
+                    data_ids.clone(),
+                    data_widths.clone(),
+                )
             })
             .collect(),
+        data,
     };
     constants::run(&mut program);
     program

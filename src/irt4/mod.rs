@@ -11,8 +11,8 @@ mod variable_flow;
 use crate::irt3::ir as t3;
 
 use self::ir::{
-    IRBinOpKind, IRExpr, IRInst, LoopCondition, LoopId, Parameter, Program, SyntheticFunction,
-    SyntheticFunctionId, VariableId, VariableType,
+    DataId, DataVariable, IRBinOpKind, IRExpr, IRInst, LoopCondition, LoopId, Parameter, Program,
+    SyntheticFunction, SyntheticFunctionId, VariableId, VariableType,
 };
 
 fn function_id(id: t3::SyntheticFunctionId) -> SyntheticFunctionId {
@@ -99,6 +99,7 @@ fn expression(expr: &t3::IRExpr) -> IRExpr {
         t3::IRExpr::CU32(value) => IRExpr::CU32(*value),
         t3::IRExpr::CU64(value) => IRExpr::CU64(*value),
         t3::IRExpr::Variable(variable) => IRExpr::Variable(variable_id(*variable)),
+        t3::IRExpr::Data(id) => IRExpr::Data(DataId { id: id.id }),
         t3::IRExpr::Bool(value) => IRExpr::Bool(*value),
         t3::IRExpr::Not(inner) => IRExpr::Not(Box::new(expression(inner))),
     }
@@ -365,6 +366,16 @@ pub fn lift(source: &t3::Program) -> Program {
     let mut program = Program {
         entry_address: source.entry_address,
         entry: source.entry.map(function_id),
+        data: source
+            .data
+            .iter()
+            .map(|item| DataVariable {
+                id: DataId { id: item.id.id },
+                address: item.address,
+                name: item.name.clone(),
+                ty: variable_type(item.ty),
+            })
+            .collect(),
         functions: source
             .functions
             .iter()

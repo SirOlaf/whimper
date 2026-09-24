@@ -2,9 +2,23 @@
 pub struct Program {
     pub entry_address: usize,
     pub entry: Option<SyntheticFunctionId>,
+    pub data: Vec<DataVariable>,
     pub functions: Vec<SyntheticFunction>,
     /// Named and inferred struct definitions used by tier 6 types.
     pub structs: Vec<StructDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataVariable {
+    pub id: DataId,
+    pub address: u64,
+    pub name: String,
+    pub ty: VariableType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DataId {
+    pub id: u64,
 }
 
 /// One shared partition lifted into a synthetic function.
@@ -168,6 +182,7 @@ pub enum IRExpr {
     CU32(u32),
     CU64(u64),
     Variable(VariableId),
+    Data(DataId),
     Bool(bool),
     Not(Box<IRExpr>),
 }
@@ -176,7 +191,7 @@ pub enum IRExpr {
 pub(crate) fn field_address(expr: &IRExpr) -> Option<(&IRExpr, usize)> {
     match expr {
         IRExpr::MemoryAddress { address, .. } => field_address(address),
-        IRExpr::Argument(_) | IRExpr::Variable(_) => Some((expr, 0)),
+        IRExpr::Argument(_) | IRExpr::Variable(_) | IRExpr::Data(_) => Some((expr, 0)),
         IRExpr::BinOp { kind, lhs, rhs } => {
             let constant = |expr: &IRExpr| match expr {
                 IRExpr::CU8(value) => Some(*value as usize),

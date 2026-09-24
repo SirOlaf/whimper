@@ -21,6 +21,7 @@ impl Effects {
             IRExpr::Variable(variable) => {
                 self.reads.insert(*variable);
             }
+            IRExpr::Data(_) => self.memory_read = true,
             IRExpr::BinOp { kind, lhs, rhs } => {
                 self.may_trap |= *kind == IRBinOpKind::UnsignedMod;
                 self.expression(lhs);
@@ -66,6 +67,13 @@ impl Effects {
             } => {
                 self.expression(src);
                 self.writes.insert(*variable);
+            }
+            IRInst::Assign {
+                dest: IRExpr::Data(_),
+                src,
+            } => {
+                self.expression(src);
+                self.memory_write = true;
             }
             IRInst::CompoundAssign {
                 dest: IRExpr::Variable(variable),

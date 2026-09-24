@@ -3,13 +3,14 @@
 use std::{collections::HashMap, fmt::Write};
 
 use super::ir::{
-    IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, StructDefinition,
+    DataId, IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, StructDefinition,
     SyntheticFunction, VariableId, VariableType, field_address,
 };
 
 struct RenderTypes<'a> {
     arguments: HashMap<usize, VariableType>,
     variables: HashMap<VariableId, VariableType>,
+    data: HashMap<DataId, VariableType>,
     structs: &'a [StructDefinition],
 }
 
@@ -38,10 +39,15 @@ impl<'a> RenderTypes<'a> {
         }
     }
 
-    fn from_function(function: &SyntheticFunction, structs: &'a [StructDefinition]) -> Self {
+    fn from_function(
+        function: &SyntheticFunction,
+        structs: &'a [StructDefinition],
+        data: &[super::ir::DataVariable],
+    ) -> Self {
         let mut slots = Self {
             arguments: HashMap::new(),
             variables: HashMap::new(),
+            data: data.iter().map(|item| (item.id, item.ty.clone())).collect(),
             structs,
         };
         for parameter in &function.parameters {
@@ -64,6 +70,7 @@ impl<'a> RenderTypes<'a> {
         match expr {
             IRExpr::Argument(ordinal) => self.arguments.get(ordinal).cloned(),
             IRExpr::Variable(variable) => self.variables.get(variable).cloned(),
+            IRExpr::Data(data) => self.data.get(data).cloned(),
             _ => None,
         }
     }
@@ -309,6 +316,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> Stri
         IRExpr::CU32(value) => format!("0x{value:x}"),
         IRExpr::CU64(value) => format!("0x{value:x}"),
         IRExpr::Variable(variable) => variable_name(*variable),
+        IRExpr::Data(data) => format!("data_{:x}", data.id),
         IRExpr::Bool(value) => value.to_string(),
         IRExpr::Not(inner) => format!("!{}", binary_operand(inner, own_precedence, types)),
     };
@@ -508,7 +516,7 @@ pub fn render(program: &Program, address_comments: bool) -> String {
     }
 
     for (index, function) in program.functions.iter().enumerate() {
-        let types = RenderTypes::from_function(function, &program.structs);
+        let types = RenderTypes::from_function(function, &program.structs, &program.data);
         let parameters = function
             .parameters
             .iter()

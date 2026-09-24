@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{
     ir::{
-        IRBinOpKind, IRExpr, IRInst, Parameter, Program, SyntheticFunction, VariableId,
+        DataId, IRBinOpKind, IRExpr, IRInst, Parameter, Program, SyntheticFunction, VariableId,
         VariableType,
     },
     values,
@@ -35,13 +35,21 @@ impl Value {
 struct Types {
     variables: HashMap<VariableId, usize>,
     arguments: HashMap<usize, usize>,
+    data: HashMap<DataId, usize>,
 }
 
 impl Types {
-    fn new(function: &SyntheticFunction) -> Self {
+    fn new(function: &SyntheticFunction, data: &[super::ir::DataVariable]) -> Self {
         let mut result = Self {
             variables: HashMap::new(),
             arguments: HashMap::new(),
+            data: data
+                .iter()
+                .filter_map(|item| match item.ty {
+                    VariableType::Unknown(Some(size)) => Some((item.id, size)),
+                    _ => None,
+                })
+                .collect(),
         };
         for parameter in &function.parameters {
             match parameter {
@@ -79,9 +87,9 @@ impl Types {
                 let size = if values::constant(lhs).is_some()
                     && !matches!(kind, IRBinOpKind::Shl | IRBinOpKind::Shr)
                 {
-                    values::width(rhs, &self.variables, &self.arguments)
+                    values::width(rhs, &self.variables, &self.arguments, &self.data)
                 } else {
-                    values::width(lhs, &self.variables, &self.arguments)
+                    values::width(lhs, &self.variables, &self.arguments, &self.data)
                 };
                 let left = self.fold(lhs, known);
                 let right = self.fold(rhs, known);
@@ -275,7 +283,11 @@ fn rewrite(
 
 pub(super) fn run(program: &mut Program) {
     let Some(entry) = program.entry else { return };
-    let types: Vec<_> = program.functions.iter().map(Types::new).collect();
+    let types: Vec<_> = program
+        .functions
+        .iter()
+        .map(|function| Types::new(function, &program.data))
+        .collect();
     let mut incoming: Vec<Vec<_>> = program
         .functions
         .iter()

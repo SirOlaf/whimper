@@ -9,8 +9,8 @@ mod return_slots;
 use crate::irt2::ir as t2;
 
 use self::ir::{
-    IRBinOpKind, IRExpr, IRInst, Parameter, Program, SyntheticFunction, SyntheticFunctionId,
-    VariableId, VariableType,
+    DataId, DataVariable, IRBinOpKind, IRExpr, IRInst, Parameter, Program, SyntheticFunction,
+    SyntheticFunctionId, VariableId, VariableType,
 };
 
 fn function_id(id: t2::SyntheticFunctionId) -> SyntheticFunctionId {
@@ -93,6 +93,7 @@ fn expression(expr: &t2::IRExpr) -> IRExpr {
         t2::IRExpr::CU32(value) => IRExpr::CU32(*value),
         t2::IRExpr::CU64(value) => IRExpr::CU64(*value),
         t2::IRExpr::Variable(variable) => IRExpr::Variable(variable_id(*variable)),
+        t2::IRExpr::Data(id) => IRExpr::Data(DataId { id: id.id }),
         t2::IRExpr::Bool(value) => IRExpr::Bool(*value),
         t2::IRExpr::Not(inner) => IRExpr::Not(Box::new(expression(inner))),
     }
@@ -146,6 +147,16 @@ pub fn lift(source: &t2::Program) -> Program {
     let program = Program {
         entry_address: source.entry_address,
         entry: source.entry.map(function_id),
+        data: source
+            .data
+            .iter()
+            .map(|item| DataVariable {
+                id: DataId { id: item.id.id },
+                address: item.address,
+                name: item.name.clone(),
+                ty: variable_type(item.ty),
+            })
+            .collect(),
         functions: source
             .functions
             .iter()

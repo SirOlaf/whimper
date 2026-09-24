@@ -4,19 +4,21 @@
 use std::collections::{HashMap, HashSet};
 
 use super::ir::{
-    IRExpr, IRInst, Parameter, Program, SyntheticFunctionId, VariableId, VariableType,
+    DataId, IRExpr, IRInst, Parameter, Program, SyntheticFunctionId, VariableId, VariableType,
 };
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 enum Slot {
     Argument(SyntheticFunctionId, usize),
     Variable(VariableId),
+    Data(DataId),
 }
 
 fn direct_slot(expr: &IRExpr, owner: SyntheticFunctionId) -> Option<Slot> {
     match expr {
         IRExpr::Argument(ordinal) => Some(Slot::Argument(owner, *ordinal)),
         IRExpr::Variable(variable) => Some(Slot::Variable(*variable)),
+        IRExpr::Data(data) => Some(Slot::Data(*data)),
         _ => None,
     }
 }
@@ -58,6 +60,10 @@ fn visit(
         } => {
             copy(Slot::Variable(*variable), value);
         }
+        IRInst::Assign {
+            dest: IRExpr::Data(data),
+            src,
+        } => copy(Slot::Data(*data), src),
         IRInst::If {
             then_branch,
             else_branch,
@@ -139,6 +145,9 @@ fn update(instr: &mut IRInst, promoted: &HashSet<Slot>) {
 /// Direct copies and synthetic call arguments carry the same type constraint.
 pub fn run(program: &mut Program) {
     let mut types = HashMap::new();
+    for data in &program.data {
+        types.insert(Slot::Data(data.id), data.ty.clone());
+    }
     for (id, function) in program.functions.iter().enumerate() {
         let owner = SyntheticFunctionId { id };
         for parameter in &function.parameters {
@@ -199,6 +208,11 @@ pub fn run(program: &mut Program) {
             }
             for (_, instr) in &mut function.body {
                 update(instr, &promoted);
+            }
+        }
+        for data in &mut program.data {
+            if promoted.contains(&Slot::Data(data.id)) {
+                data.ty = VariableType::CString;
             }
         }
     }

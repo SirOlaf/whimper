@@ -203,6 +203,7 @@ fn replace_read(expr: &mut IRExpr, variable: VariableId, replacement: &IRExpr) {
         | IRExpr::CU32(_)
         | IRExpr::CU64(_)
         | IRExpr::Variable(_)
+        | IRExpr::Data(_)
         | IRExpr::Bool(_) => {}
     }
 }

@@ -9,6 +9,7 @@ fn is_zero(expr: &IRExpr) -> bool {
 fn effect_free(expr: &IRExpr) -> bool {
     match expr {
         IRExpr::Deref(_) => false,
+        IRExpr::Data(_) => false,
         IRExpr::BinOp { lhs, rhs, .. } => effect_free(lhs) && effect_free(rhs),
         IRExpr::CastUnknownPtr { address, .. }
         | IRExpr::Convert { value: address, .. }
@@ -76,6 +77,7 @@ fn simplify_expression(expr: &mut IRExpr) {
         | IRExpr::CU32(_)
         | IRExpr::CU64(_)
         | IRExpr::Variable(_)
+        | IRExpr::Data(_)
         | IRExpr::Bool(_) => {}
     }
 }

@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use crate::irt4::ir as t4;
 
 use self::ir::{
-    IRBinOpKind, IRExpr, IRInst, LoopCondition, LoopId, Parameter, Program, SyntheticFunction,
-    SyntheticFunctionId, VariableId, VariableType,
+    DataId, DataVariable, IRBinOpKind, IRExpr, IRInst, LoopCondition, LoopId, Parameter, Program,
+    SyntheticFunction, SyntheticFunctionId, VariableId, VariableType,
 };
 
 fn function_id(id: t4::SyntheticFunctionId) -> SyntheticFunctionId {
@@ -106,6 +106,7 @@ fn expression(expr: &t4::IRExpr, ids: &mut VariableIds) -> IRExpr {
         t4::IRExpr::CU32(value) => IRExpr::CU32(*value),
         t4::IRExpr::CU64(value) => IRExpr::CU64(*value),
         t4::IRExpr::Variable(variable) => IRExpr::Variable(ids.translate(*variable)),
+        t4::IRExpr::Data(id) => IRExpr::Data(DataId { id: id.id }),
         t4::IRExpr::Bool(value) => IRExpr::Bool(*value),
         t4::IRExpr::Not(inner) => IRExpr::Not(Box::new(expression(inner, ids))),
     }
@@ -213,6 +214,16 @@ pub fn lift(source: &t4::Program) -> Program {
     let mut program = Program {
         entry_address: source.entry_address,
         entry: source.entry.map(function_id),
+        data: source
+            .data
+            .iter()
+            .map(|item| DataVariable {
+                id: DataId { id: item.id.id },
+                address: item.address,
+                name: item.name.clone(),
+                ty: variable_type(item.ty),
+            })
+            .collect(),
         structs: Vec::new(),
         functions: source
             .functions

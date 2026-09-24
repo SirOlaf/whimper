@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::ir::{IRBinOpKind, IRExpr, IntegerType, VariableId};
+use super::ir::{DataId, IRBinOpKind, IRExpr, IntegerType, VariableId};
 
 pub(super) fn mask(size: usize) -> u64 {
     assert!((1..=8).contains(&size), "unsupported integer width: {size}");
@@ -61,9 +61,11 @@ pub(super) fn width(
     expr: &IRExpr,
     variables: &HashMap<VariableId, usize>,
     arguments: &HashMap<usize, usize>,
+    data: &HashMap<DataId, usize>,
 ) -> Option<usize> {
     match expr {
         IRExpr::Variable(variable) => variables.get(variable).copied(),
+        IRExpr::Data(id) => data.get(id).copied(),
         IRExpr::Argument(ordinal) => arguments.get(ordinal).copied(),
         IRExpr::CU8(_) | IRExpr::Bool(_) | IRExpr::Not(_) => Some(1),
         IRExpr::CU32(_) => Some(4),
@@ -78,10 +80,10 @@ pub(super) fn width(
             IRBinOpKind::Eq | IRBinOpKind::SignedGt | IRBinOpKind::UnsignedLt | IRBinOpKind::Or => {
                 Some(1)
             }
-            IRBinOpKind::Shl | IRBinOpKind::Shr => width(lhs, variables, arguments),
+            IRBinOpKind::Shl | IRBinOpKind::Shr => width(lhs, variables, arguments, data),
             _ => {
-                let left = width(lhs, variables, arguments);
-                let right = width(rhs, variables, arguments);
+                let left = width(lhs, variables, arguments, data);
+                let right = width(rhs, variables, arguments, data);
                 if constant(rhs).is_some() {
                     left.or(right)
                 } else if constant(lhs).is_some() {

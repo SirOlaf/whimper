@@ -126,7 +126,7 @@ fn rewrite_expression(
         | IRExpr::CastUnknownPtr { address: inner, .. }
         | IRExpr::Convert { value: inner, .. }
         | IRExpr::Not(inner) => rewrite_expression(inner, aliases, native_states),
-        IRExpr::CU8(_) | IRExpr::CU32(_) | IRExpr::CU64(_) | IRExpr::Bool(_) => {}
+        IRExpr::CU8(_) | IRExpr::CU32(_) | IRExpr::CU64(_) | IRExpr::Data(_) | IRExpr::Bool(_) => {}
     }
 }
 
@@ -348,6 +348,7 @@ fn max_variable_id(function: &SyntheticFunction) -> Option<usize> {
             | IRExpr::CU8(_)
             | IRExpr::CU32(_)
             | IRExpr::CU64(_)
+            | IRExpr::Data(_)
             | IRExpr::Bool(_) => {}
         }
     }

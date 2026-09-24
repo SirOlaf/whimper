@@ -39,6 +39,7 @@ fn expression_uses(expr: &IRExpr, variable: VariableId) -> bool {
         | IRExpr::CU8(_)
         | IRExpr::CU32(_)
         | IRExpr::CU64(_)
+        | IRExpr::Data(_)
         | IRExpr::Bool(_) => false,
     }
 }

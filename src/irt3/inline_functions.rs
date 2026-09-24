@@ -193,6 +193,7 @@ fn visit_expression(expr: &mut IRExpr, visit: &mut impl FnMut(&mut IRExpr)) {
         | IRExpr::CU32(_)
         | IRExpr::CU64(_)
         | IRExpr::Variable(_)
+        | IRExpr::Data(_)
         | IRExpr::Bool(_) => {}
     }
     visit(expr);
@@ -410,7 +411,7 @@ impl Inliner<'_> {
                 let mut condition = condition.clone();
                 let mut reads_memory = false;
                 visit_expression(&mut condition, &mut |expr| {
-                    reads_memory |= matches!(expr, IRExpr::Deref(_));
+                    reads_memory |= matches!(expr, IRExpr::Deref(_) | IRExpr::Data(_));
                 });
                 // An empty conditional has no effect unless evaluating its
                 // condition performs a memory read. Retain those reads.
@@ -527,6 +528,7 @@ pub fn tr(mut program: Program) -> Program {
         );
     }
     let entry_address = program.entry_address;
+    let data = program.data.clone();
     let mut cfg = Cfg::build(program);
     cfg.eliminate_branches();
     let mut inliner = Inliner {
@@ -549,6 +551,7 @@ pub fn tr(mut program: Program) -> Program {
     Program {
         entry_address,
         entry: Some(SyntheticFunctionId { id: 0 }),
+        data,
         functions: vec![SyntheticFunction {
             entry_offset,
             parameters: signature,

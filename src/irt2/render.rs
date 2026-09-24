@@ -99,6 +99,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
         IRExpr::CU32(value) => format!("0x{value:x}"),
         IRExpr::CU64(value) => format!("0x{value:x}"),
         IRExpr::Variable(variable) => variable_name(*variable),
+        IRExpr::Data(data) => format!("data_{:x}", data.id),
         IRExpr::Bool(value) => value.to_string(),
         IRExpr::Not(inner) => format!("!{}", binary_operand(inner, own_precedence)),
     };

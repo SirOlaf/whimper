@@ -29,6 +29,7 @@ fn visit_expression(expr: &IRExpr, visit: &mut impl FnMut(VariableId)) {
         | IRExpr::CU8(_)
         | IRExpr::CU32(_)
         | IRExpr::CU64(_)
+        | IRExpr::Data(_)
         | IRExpr::Bool(_) => {}
     }
 }
@@ -148,6 +149,7 @@ fn reads_variable(expr: &IRExpr, variable: VariableId) -> bool {
 fn effect_free(expr: &IRExpr) -> bool {
     match expr {
         IRExpr::Deref(_) => false,
+        IRExpr::Data(_) => false,
         IRExpr::BinOp { lhs, rhs, .. } => effect_free(lhs) && effect_free(rhs),
         IRExpr::CastUnknownPtr { address, .. }
         | IRExpr::Convert { value: address, .. }

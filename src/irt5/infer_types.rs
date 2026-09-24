@@ -4,13 +4,14 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::ir::{
-    IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, StructDefinition, StructField,
-    StructId, SyntheticFunctionId, VariableId, VariableType, field_address,
+    DataId, IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, StructDefinition,
+    StructField, StructId, SyntheticFunctionId, VariableId, VariableType, field_address,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Slot {
     Variable(VariableId),
+    Data(DataId),
     Argument(SyntheticFunctionId, usize),
 }
 
@@ -150,6 +151,7 @@ struct Analysis {
 fn direct_slot(expr: &IRExpr, owner: SyntheticFunctionId) -> Option<Slot> {
     match expr {
         IRExpr::Variable(variable) => Some(Slot::Variable(*variable)),
+        IRExpr::Data(data) => Some(Slot::Data(*data)),
         IRExpr::Argument(ordinal) => Some(Slot::Argument(owner, *ordinal)),
         _ => None,
     }
@@ -552,7 +554,7 @@ impl Analysis {
             | IRExpr::Convert { value, .. }
             | IRExpr::Not(value) => self.pointer_value(value, owner),
             IRExpr::CU8(_) | IRExpr::CU32(_) | IRExpr::CU64(_) | IRExpr::Bool(_) => {}
-            IRExpr::Argument(_) | IRExpr::Variable(_) => unreachable!(),
+            IRExpr::Argument(_) | IRExpr::Variable(_) | IRExpr::Data(_) => unreachable!(),
         }
     }
 
@@ -602,7 +604,7 @@ impl Analysis {
             // input slots are not themselves pointers.
             IRExpr::Convert { .. } => self.expression(expr, owner),
             IRExpr::CU8(_) | IRExpr::CU32(_) | IRExpr::CU64(_) | IRExpr::Bool(_) => {}
-            IRExpr::Argument(_) | IRExpr::Variable(_) => unreachable!(),
+            IRExpr::Argument(_) | IRExpr::Variable(_) | IRExpr::Data(_) => unreachable!(),
         }
     }
 
@@ -656,6 +658,7 @@ impl Analysis {
             IRExpr::Not(value) => self.expression(value, owner),
             IRExpr::Argument(_)
             | IRExpr::Variable(_)
+            | IRExpr::Data(_)
             | IRExpr::CU8(_)
             | IRExpr::CU32(_)
             | IRExpr::CU64(_)
@@ -1168,8 +1171,9 @@ impl Analysis {
             .filter_map(|(&slot, fields)| (fields.len() > 1).then_some(slot))
             .collect::<Vec<_>>();
         slots.sort_by_key(|slot| match slot {
-            Slot::Argument(owner, ordinal) => (owner.id, 0, *ordinal),
-            Slot::Variable(variable) => (variable.owner.id, 1, variable.id),
+            Slot::Data(data) => (0, 0, data.id),
+            Slot::Argument(owner, ordinal) => (owner.id as u64, 1, *ordinal as u64),
+            Slot::Variable(variable) => (variable.owner.id as u64, 2, variable.id as u64),
         });
         for slot in slots {
             // Fixed displacements alongside a dynamic index describe array
@@ -1491,6 +1495,9 @@ fn calls(instr: &IRInst, owner: SyntheticFunctionId, program: &Program, analysis
 
 pub fn run(program: &mut Program) {
     let mut analysis = Analysis::default();
+    for data in &program.data {
+        analysis.types.insert(Slot::Data(data.id), data.ty.clone());
+    }
     for (index, function) in program.functions.iter().enumerate() {
         let owner = SyntheticFunctionId { id: index };
         for parameter in &function.parameters {
@@ -1575,5 +1582,8 @@ pub fn run(program: &mut Program) {
         for (_, instr) in &mut function.body {
             retype(instr, &analysis, owner);
         }
+    }
+    for data in &mut program.data {
+        data.ty = analysis.inferred_type(Slot::Data(data.id), data.ty.clone());
     }
 }
