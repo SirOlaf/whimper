@@ -20,7 +20,8 @@ use super::{
 };
 use facts::Facts;
 use sequences::{
-    MAX_REWRITES, collapse_temporary_assignments, collect_uses, recover_vector_iterations, sequence,
+    MAX_REWRITES, collapse_temporary_assignments, collect_uses, merge_adjacent_branches,
+    recover_vector_iterations, sequence,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -131,6 +132,9 @@ pub fn run_with_options(program: &mut Program, options: Options) -> Report {
     relocate_variables::run(program);
     infer_returns::run(program);
     eliminate_variables::run(program);
+    for function in &mut program.functions {
+        merge_adjacent_branches(&mut function.body, function.entry_offset, &mut report);
+    }
     report.remaining = shapes::collect_loop_analyses(program);
     report
 }

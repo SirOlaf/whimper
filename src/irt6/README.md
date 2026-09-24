@@ -123,6 +123,11 @@ short-circuit evaluation and operand order remain intact. The rule also flips
 comparisons when their exact complement is available, such as signed `>` to
 signed `<=`.
 
+The final branch pass combines adjacent `if` statements with identical pure
+conditions when neither arm of the first branch writes a value read by that
+condition. It appends the second branch's corresponding arm to the first,
+retaining the order of effects while removing the redundant check.
+
 Branch facts identify known zero strides. Writes invalidate dependent facts;
 only invariant facts enter loop bodies. A known zero stride prevents recovery.
 Otherwise, the rule assumes a nonzero stride on terminating executions: a zero

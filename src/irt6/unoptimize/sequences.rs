@@ -1,6 +1,6 @@
 use super::super::{
     arithmetic::Context,
-    effects::Effects,
+    effects::{Effects, repeatable},
     ir::{IRInst, LoopCondition, VariableId},
     shapes,
 };
@@ -242,6 +242,94 @@ pub(super) fn recover_vector_iterations<T: InstructionSlot>(
         }
     }
     false
+}
+
+/// Two consecutive checks of the same pure condition can share a branch
+/// when neither arm of the first check changes any value read by it.
+pub(super) fn merge_adjacent_branches<T: InstructionSlot>(
+    instructions: &mut Vec<T>,
+    fallback_offset: usize,
+    report: &mut Report,
+) {
+    let mut index = 0;
+    while index + 1 < instructions.len() {
+        if report.rewrites.len() >= MAX_REWRITES {
+            report.budget_exhausted = true;
+            return;
+        }
+        let can_merge = match (
+            instructions[index].instruction(),
+            instructions[index + 1].instruction(),
+        ) {
+            (
+                IRInst::If {
+                    condition: first,
+                    then_branch,
+                    else_branch,
+                },
+                IRInst::If {
+                    condition: second, ..
+                },
+            ) if first == second && repeatable(first) => {
+                let reads = &Effects::of_expression(first).reads;
+                then_branch.iter().chain(else_branch).all(|instruction| {
+                    let mut effects = Effects::default();
+                    effects.instruction(instruction);
+                    effects.writes.is_disjoint(reads)
+                })
+            }
+            _ => false,
+        };
+        if !can_merge {
+            index += 1;
+            continue;
+        }
+
+        let offset = instructions[index + 1].offset(fallback_offset);
+        let (first, second) = instructions.split_at_mut(index + 1);
+        let IRInst::If {
+            then_branch: first_then,
+            else_branch: first_else,
+            ..
+        } = first[index].instruction_mut()
+        else {
+            unreachable!();
+        };
+        let IRInst::If {
+            then_branch: second_then,
+            else_branch: second_else,
+            ..
+        } = second[0].instruction_mut()
+        else {
+            unreachable!();
+        };
+        first_then.append(second_then);
+        first_else.append(second_else);
+        instructions.remove(index + 1);
+        report.rewrites.push(Rewrite {
+            offset,
+            rule: "merge-identical-adjacent-branches",
+        });
+        // Keep this index: a third adjacent check may also be mergeable.
+    }
+
+    for slot in instructions {
+        let offset = slot.offset(fallback_offset);
+        match slot.instruction_mut() {
+            IRInst::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                merge_adjacent_branches(then_branch, offset, report);
+                merge_adjacent_branches(else_branch, offset, report);
+            }
+            IRInst::While { body, .. } | IRInst::ForEach { body, .. } => {
+                merge_adjacent_branches(body, offset, report);
+            }
+            _ => {}
+        }
+    }
 }
 
 pub(super) fn sequence<'a>(
