@@ -329,6 +329,14 @@ fn binary_operator(kind: &IRBinOpKind) -> &'static str {
     }
 }
 
+fn integer_literal(value: u64) -> String {
+    if value > 1 && value.is_power_of_two() {
+        format!("0x{value:x}")
+    } else {
+        value.to_string()
+    }
+}
+
 fn binary_operand(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> String {
     if matches!(expr, IRExpr::BinOp { .. }) {
         format!("({})", expression(expr, 0, types))
@@ -374,9 +382,9 @@ fn expression(expr: &IRExpr, parent_precedence: u8, types: &RenderTypes) -> Stri
                 format!("{target}({source}({input}))")
             }
         }
-        IRExpr::CU8(value) => format!("0x{value:x}"),
-        IRExpr::CU32(value) => format!("0x{value:x}"),
-        IRExpr::CU64(value) => format!("0x{value:x}"),
+        IRExpr::CU8(value) => integer_literal(*value as u64),
+        IRExpr::CU32(value) => integer_literal(*value as u64),
+        IRExpr::CU64(value) => integer_literal(*value),
         IRExpr::Variable(variable) => variable_name(*variable),
         IRExpr::Bool(value) => value.to_string(),
         IRExpr::Not(inner) => format!("!{}", binary_operand(inner, own_precedence, types)),
@@ -599,10 +607,11 @@ fn instruction(
             }
             writeln!(
                 output,
-                "{padding}for {}: {} in {}[{start}..] {{",
+                "{padding}for {}: {} in {}[{}..] {{",
                 variable_name(*variable),
                 type_name(element_type.clone(), types.structs),
                 expression(vector, 10, types),
+                integer_literal(*start as u64),
             )
             .unwrap();
             let nested_padding = "    ".repeat(indent + 1);
