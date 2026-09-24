@@ -20,6 +20,7 @@ fn lift_bin_op(kind: &t1::IRBinOpKind) -> IRBinOpKind {
         t1::IRBinOpKind::Sub => IRBinOpKind::Sub,
         t1::IRBinOpKind::Mul => IRBinOpKind::Mul,
         t1::IRBinOpKind::Shl => IRBinOpKind::Shl,
+        t1::IRBinOpKind::Shr => IRBinOpKind::Shr,
         t1::IRBinOpKind::And => IRBinOpKind::And,
         t1::IRBinOpKind::Or => IRBinOpKind::Or,
         t1::IRBinOpKind::Eq => IRBinOpKind::Eq,

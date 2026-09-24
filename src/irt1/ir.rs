@@ -57,6 +57,7 @@ pub enum IRBinOpKind {
     Sub,
     Mul,
     Shl,
+    Shr,
     And,
     Or,
     Eq,

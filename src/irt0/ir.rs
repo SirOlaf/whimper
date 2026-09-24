@@ -29,6 +29,8 @@ pub enum IRBinOpKind {
     Mul,
 
     Shl,
+    /// Logical right shift.
+    Shr,
 
     And,
     Or,
@@ -509,6 +511,35 @@ fn lift_shl(x: Instruction) -> Vec<IRInst> {
     }
 }
 
+fn lift_shr(x: Instruction) -> Vec<IRInst> {
+    match x.code() {
+        Code::Shr_rm32_imm8 => {
+            let expr = IRExpr::BinOp {
+                kind: IRBinOpKind::Shr,
+                lhs: Box::new(lift_op(x, 0)),
+                rhs: Box::new(lift_op(x, 1)),
+            };
+            vec![
+                IRInst::SetFlagsFrom(
+                    HashSet::from([
+                        NativeFlag::Sign,
+                        NativeFlag::Zero,
+                        NativeFlag::AuxCarry,
+                        NativeFlag::Parity,
+                        NativeFlag::Carry,
+                    ]),
+                    expr.clone(),
+                ),
+                IRInst::Asgn {
+                    dest: lift_op(x, 0),
+                    src: expr,
+                },
+            ]
+        }
+        _ => panic!("{:?}", x),
+    }
+}
+
 fn lift_xor(x: Instruction) -> Vec<IRInst> {
     let same_register = x.op_kind(0) == OpKind::Register
         && x.op_kind(1) == OpKind::Register
@@ -577,6 +608,7 @@ pub fn lift_to_irt0(code: &[u8], base_offset: usize) -> Program {
             | Mnemonic::Jbe
             | Mnemonic::Jg => Some(lift_jmp(instruction, compare_for_jump)),
             Mnemonic::Shl => Some(lift_shl(instruction)),
+            Mnemonic::Shr => Some(lift_shr(instruction)),
             Mnemonic::Xor => Some(lift_xor(instruction)),
             Mnemonic::Ret => Some(lift_ret(instruction)),
             Mnemonic::Nop => None,

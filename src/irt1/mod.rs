@@ -40,6 +40,7 @@ fn lift_expr(expr: IRT0Expr) -> IRExpr {
                 IRT0BinOpKind::Sub => IRBinOpKind::Sub,
                 IRT0BinOpKind::Mul => IRBinOpKind::Mul,
                 IRT0BinOpKind::Shl => IRBinOpKind::Shl,
+                IRT0BinOpKind::Shr => IRBinOpKind::Shr,
                 IRT0BinOpKind::And => IRBinOpKind::And,
                 IRT0BinOpKind::Or => IRBinOpKind::Or,
                 IRT0BinOpKind::Eq => IRBinOpKind::Eq,

@@ -41,7 +41,7 @@ fn precedence(expr: &IRExpr) -> u8 {
             ..
         } => 3,
         IRExpr::BinOp {
-            kind: IRBinOpKind::Shl,
+            kind: IRBinOpKind::Shl | IRBinOpKind::Shr,
             ..
         } => 4,
         IRExpr::BinOp {
@@ -71,6 +71,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
                 IRBinOpKind::Sub => Some("-"),
                 IRBinOpKind::Mul => Some("*"),
                 IRBinOpKind::Shl => Some("<<"),
+                IRBinOpKind::Shr => Some(">>>"),
                 IRBinOpKind::And => Some("&"),
                 IRBinOpKind::Or => Some("||"),
                 IRBinOpKind::Eq => Some("==="),
