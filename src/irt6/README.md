@@ -43,14 +43,17 @@ expression is retained. Arithmetic normalization never crosses a load or invents
 memory equivalence. Constants use the operation width when paired with a known
 integer operand; casts and differing nonliteral widths are not erased.
 
-`shapes.rs` uses these values directly to compare a loop update with its expected
+`shapes/loops.rs` uses these values directly to compare a loop update with its expected
 recurrence. The arithmetic dump prints the same `LoopAnalysis` and `Value` objects
 used for recognition. It is an analysis view, not a parser or a second source of
 truth. `stride_source` retains the matched source operand for reconstruction.
 
 ## Rules and proof constraints
 
-`unoptimize.rs` registers ordered rules. Each successful rewrite restarts rule
+`unoptimize/rules.rs` registers ordered rules. `unoptimize/facts.rs` tracks
+branch facts and cached loads; `unoptimize/sequences.rs` drives local and
+multi-instruction rewrites; `unoptimize/report.rs` formats the analysis. Each
+successful rewrite restarts rule
 selection at that node, then the driver descends into structured children. A
 local limit of 16 rewrites and a total limit of 256 bound code growth. Hitting a
 limit keeps valid IR and records the stop in the report. This initial driver is
@@ -134,7 +137,10 @@ their memory is disjoint.
 
 Add algebraic identities to `arithmetic.rs` with explicit width and effect
 conditions. Add control restructuring rules to the rule registry; keep their
-entry, control-flow, and scope proofs local. Add operation recognizers in
-`shapes.rs`, returning the operands and unmet constraints. Reconstruction belongs
-in a rewrite rule and must preserve effects and source metadata under its
-documented assumptions.
+entry, control-flow, and scope proofs local. Add operation recognizers in the
+corresponding `shapes/` module, returning the operands and unmet constraints.
+For analyses that inspect nested IR, implement `shapes::visit::Analyzer` and
+register the collector in `shapes/mod.rs`; the shared visitor walks instructions
+and expressions once with source offsets and a function-local arithmetic
+context. Reconstruction belongs in a rewrite rule and must preserve effects
+and source metadata under its documented assumptions.
