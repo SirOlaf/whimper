@@ -32,6 +32,14 @@ fn loop_id(id: t3::LoopId) -> LoopId {
 
 fn parameter(parameter: &t3::Parameter) -> Parameter {
     match parameter {
+        t3::Parameter::Input { ordinal, size } => Parameter::Argument {
+            ordinal: *ordinal,
+            size: *size,
+        },
+        t3::Parameter::Value { variable, size } => Parameter::Slot {
+            variable: variable_id(*variable),
+            size: *size,
+        },
         t3::Parameter::Native { ordinal, register } => Parameter::Argument {
             ordinal: *ordinal,
             size: register.size(),
@@ -391,10 +399,214 @@ pub fn lift(source: &t3::Program) -> Program {
             .collect(),
     };
     fold_constants::run(&mut program);
+    for function in &mut program.functions {
+        function.body = collapse_constant_branches(std::mem::take(&mut function.body));
+    }
+    fold_constants::run(&mut program);
     eliminate_aliases::run(&mut program);
     inline_loop_conditions::run(&mut program);
     simplify_binary_operations::run(&mut program);
     simplify_branches::run(&mut program);
     place_declarations::run(&mut program);
+    remove_unused_declarations(&mut program);
+    prune_unused_entry_arguments(&mut program);
     program
+}
+
+fn remove_unused_declarations(program: &mut Program) {
+    fn keep(instr: &mut IRInst, mentioned: &std::collections::HashSet<VariableId>) -> bool {
+        match instr {
+            IRInst::DeclareVariable { variable, .. } => mentioned.contains(variable),
+            IRInst::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                then_branch.retain_mut(|instr| keep(instr, mentioned));
+                else_branch.retain_mut(|instr| keep(instr, mentioned));
+                true
+            }
+            IRInst::While { body, .. } => {
+                body.retain_mut(|(_, instr)| keep(instr, mentioned));
+                true
+            }
+            _ => true,
+        }
+    }
+    for function in &mut program.functions {
+        let flow = variable_flow::Flow::from_function(function);
+        let mut mentioned = std::collections::HashSet::new();
+        for node in &flow.nodes {
+            if let Some(variable) = node.operation.write {
+                mentioned.insert(variable);
+            }
+            for dependency in &node.operation.dependencies {
+                mentioned.insert(dependency.base);
+            }
+        }
+        function
+            .body
+            .retain_mut(|(_, instr)| keep(instr, &mentioned));
+    }
+}
+
+fn expression_arguments(expr: &IRExpr, used: &mut std::collections::HashSet<usize>) {
+    match expr {
+        IRExpr::Argument(ordinal) => {
+            used.insert(*ordinal);
+        }
+        IRExpr::BinOp { lhs, rhs, .. } => {
+            expression_arguments(lhs, used);
+            expression_arguments(rhs, used);
+        }
+        IRExpr::Deref(inner)
+        | IRExpr::Not(inner)
+        | IRExpr::Convert { value: inner, .. }
+        | IRExpr::CastUnknownPtr { address: inner, .. } => expression_arguments(inner, used),
+        _ => {}
+    }
+}
+
+fn instruction_arguments(
+    instr: &IRInst,
+    used: &mut std::collections::HashSet<usize>,
+    called: &mut std::collections::HashSet<usize>,
+) {
+    match instr {
+        IRInst::Assign { dest, src } => {
+            expression_arguments(dest, used);
+            expression_arguments(src, used);
+        }
+        IRInst::DeclareAndAssignVariable { value, .. } | IRInst::AssignVariable { value, .. } => {
+            expression_arguments(value, used)
+        }
+        IRInst::LoadVariable { address, .. }
+        | IRInst::StoreVariable { address, .. }
+        | IRInst::Return(Some(address))
+        | IRInst::Jump(address) => expression_arguments(address, used),
+        IRInst::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            expression_arguments(condition, used);
+            for instr in then_branch.iter().chain(else_branch) {
+                instruction_arguments(instr, used, called);
+            }
+        }
+        IRInst::While {
+            condition, body, ..
+        } => {
+            match condition {
+                self::ir::LoopCondition::Before { expression, .. }
+                | self::ir::LoopCondition::After { expression, .. } => {
+                    expression_arguments(expression, used)
+                }
+            }
+            for (_, instr) in body {
+                instruction_arguments(instr, used, called);
+            }
+        }
+        IRInst::CallSynthetic {
+            function,
+            arguments,
+        } => {
+            called.insert(function.id);
+            for argument in arguments {
+                expression_arguments(argument, used);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn prune_unused_entry_arguments(program: &mut Program) {
+    let Some(entry) = program.entry else { return };
+    let mut used = std::collections::HashSet::new();
+    let mut called = std::collections::HashSet::new();
+    for function in &program.functions {
+        for (_, instr) in &function.body {
+            instruction_arguments(instr, &mut used, &mut called);
+        }
+    }
+    if called.contains(&entry.id) {
+        return;
+    }
+    program.functions[entry.id]
+        .parameters
+        .retain(|parameter| match parameter {
+            Parameter::Argument { ordinal, .. } => used.contains(ordinal),
+            Parameter::Slot { .. } => true,
+        });
+}
+
+fn collapse_constant_branches(body: Vec<(usize, IRInst)>) -> Vec<(usize, IRInst)> {
+    let mut result = Vec::new();
+    for (offset, instr) in body {
+        match instr {
+            IRInst::If {
+                condition: IRExpr::Bool(value),
+                then_branch,
+                else_branch,
+            } => {
+                let selected = if value { then_branch } else { else_branch };
+                result.extend(collapse_constant_branches(
+                    selected
+                        .into_iter()
+                        .map(|instr| (offset, instr))
+                        .collect::<Vec<_>>(),
+                ));
+            }
+            IRInst::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let then_branch = collapse_constant_branches(
+                    then_branch
+                        .into_iter()
+                        .map(|instr| (offset, instr))
+                        .collect::<Vec<_>>(),
+                )
+                .into_iter()
+                .map(|(_, instr)| instr)
+                .collect();
+                let else_branch = collapse_constant_branches(
+                    else_branch
+                        .into_iter()
+                        .map(|instr| (offset, instr))
+                        .collect::<Vec<_>>(),
+                )
+                .into_iter()
+                .map(|(_, instr)| instr)
+                .collect();
+                result.push((
+                    offset,
+                    IRInst::If {
+                        condition,
+                        then_branch,
+                        else_branch,
+                    },
+                ));
+            }
+            IRInst::While {
+                label,
+                entry_offset,
+                condition,
+                body,
+            } => {
+                result.push((
+                    offset,
+                    IRInst::While {
+                        label,
+                        entry_offset,
+                        condition,
+                        body: collapse_constant_branches(body),
+                    },
+                ));
+            }
+            other => result.push((offset, other)),
+        }
+    }
+    result
 }

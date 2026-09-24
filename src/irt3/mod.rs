@@ -26,6 +26,14 @@ fn variable_id(id: t2::VariableId) -> VariableId {
 
 fn parameter(parameter: &t2::Parameter) -> Parameter {
     match parameter {
+        t2::Parameter::Input { ordinal, size } => Parameter::Input {
+            ordinal: *ordinal,
+            size: *size,
+        },
+        t2::Parameter::Value { variable, size } => Parameter::Value {
+            variable: variable_id(*variable),
+            size: *size,
+        },
         t2::Parameter::Native { ordinal, register } => Parameter::Native {
             ordinal: *ordinal,
             register: *register,

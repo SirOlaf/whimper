@@ -154,8 +154,8 @@ fn candidate(function: &SyntheticFunction) -> Option<(VariableId, usize, usize, 
         .parameters
         .iter()
         .filter_map(|parameter| match parameter {
-            Parameter::Slot { variable, .. } => Some(*variable),
-            Parameter::Native { .. } => None,
+            Parameter::Slot { variable, .. } | Parameter::Value { variable, .. } => Some(*variable),
+            Parameter::Native { .. } | Parameter::Input { .. } => None,
         })
         .collect();
     let bool_slots: HashSet<_> = function

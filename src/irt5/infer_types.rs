@@ -1128,6 +1128,39 @@ impl Analysis {
     }
 
     fn propagate_fields(&mut self) {
+        // Loop-carried pointer increments can make a derived address feed its
+        // own base through copies. Repeatedly adding that displacement would
+        // invent infinitely many struct fields. Such edges provide no fixed
+        // object layout evidence, so exclude them from field propagation.
+        let mut adjacency: HashMap<Slot, Vec<Slot>> = HashMap::new();
+        for &(dest, src) in &self.copies {
+            adjacency.entry(dest).or_default().push(src);
+            adjacency.entry(src).or_default().push(dest);
+        }
+        for &(dest, base, _) in &self.derived_addresses {
+            adjacency.entry(dest).or_default().push(base);
+        }
+        let cyclic: HashSet<(Slot, Slot)> = self
+            .derived_addresses
+            .iter()
+            .filter_map(|&(dest, base, displacement)| {
+                let displacement = displacement?;
+                if displacement == 0 {
+                    return None;
+                }
+                let mut pending = vec![base];
+                let mut seen = HashSet::new();
+                while let Some(slot) = pending.pop() {
+                    if slot == dest {
+                        return Some((dest, base));
+                    }
+                    if seen.insert(slot) {
+                        pending.extend(adjacency.get(&slot).into_iter().flatten().copied());
+                    }
+                }
+                None
+            })
+            .collect();
         loop {
             let mut changed = false;
             for &(dest, src) in &self.copies {
@@ -1143,6 +1176,9 @@ impl Analysis {
                 }
             }
             for &(dest, base, displacement) in &self.derived_addresses {
+                if cyclic.contains(&(dest, base)) {
+                    continue;
+                }
                 let Some(displacement) = displacement else {
                     continue;
                 };

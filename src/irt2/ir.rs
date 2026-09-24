@@ -32,14 +32,26 @@ pub struct SyntheticFunction {
 
 #[derive(Debug, Clone)]
 pub enum Parameter {
+    Input {
+        ordinal: usize,
+        size: usize,
+    },
     /// An incoming machine register at the true entry point. The register
     /// alias carries the width, and its full register identifies the family.
-    Native { ordinal: usize, register: Register },
+    Native {
+        ordinal: usize,
+        register: Register,
+    },
     /// An incoming register value passed by a synthetic predecessor. The
     /// register alias carries the width, and its full register identifies the family.
     Slot {
         variable: VariableId,
         register: Register,
+    },
+    /// A value passed between control-flow partitions with no native identity.
+    Value {
+        variable: VariableId,
+        size: usize,
     },
 }
 

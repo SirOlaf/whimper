@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use iced_x86::Register;
 
@@ -19,6 +19,7 @@ pub enum NativeFlag {
 pub struct Program {
     pub entry_address: usize,
     pub entry: Option<SyntheticFunctionId>,
+    pub stack_widths: HashMap<i64, usize>,
     pub functions: Vec<SyntheticFunction>,
 }
 
@@ -27,7 +28,7 @@ pub struct Program {
 pub struct SyntheticFunction {
     pub entry_offset: usize,
     /// Register aliases whose low bytes are used by this function or a callee.
-    pub parameters: Vec<Register>,
+    pub parameters: Vec<Parameter>,
     /// Flags read in this body before this body defines them.
     pub external_flags: HashSet<NativeFlag>,
     pub body: Vec<(usize, IRInst)>,
@@ -44,6 +45,16 @@ pub struct SyntheticFunctionId {
 pub struct VariableId {
     pub owner: SyntheticFunctionId,
     pub id: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Parameter {
+    Register(Register),
+    /// Eight bytes aligned relative to the native entry stack pointer.
+    Stack {
+        offset: i64,
+        size: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +101,10 @@ pub enum IRExpr {
         size: usize,
     },
     Reg(Register),
+    Stack {
+        offset: i64,
+        size: usize,
+    },
     Flag(NativeFlag),
     CU8(u8),
     CU32(u32),

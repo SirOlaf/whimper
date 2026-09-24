@@ -265,6 +265,10 @@ pub fn render(program: &Program, address_comments: bool) -> String {
                 Parameter::Slot { variable, register } => {
                     format!("{}: Register<{register:?}>", variable_name(*variable))
                 }
+                Parameter::Value { variable, size } => {
+                    format!("{}: Unknown<{size}>", variable_name(*variable))
+                }
+                Parameter::Input { ordinal, size } => format!("arg{ordinal}: Unknown<{size}>"),
             })
             .collect::<Vec<_>>()
             .join(", ");

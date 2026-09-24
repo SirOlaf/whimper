@@ -20,7 +20,7 @@ pub(super) struct Offset {
 pub(super) struct Operation {
     pub dependencies: HashSet<Offset>,
     pub write: Option<VariableId>,
-    pub constant_write: bool,
+    pub pure_write: bool,
     pub offset: Option<Offset>,
     pub argument: Option<usize>,
 }
@@ -119,6 +119,17 @@ fn reads(expr: &IRExpr, result: &mut HashSet<Offset>) {
     }
 }
 
+fn pure(expr: &IRExpr) -> bool {
+    match expr {
+        IRExpr::BinOp { lhs, rhs, .. } => pure(lhs) && pure(rhs),
+        IRExpr::Convert { value, .. }
+        | IRExpr::Not(value)
+        | IRExpr::CastUnknownPtr { address: value, .. } => pure(value),
+        IRExpr::Deref(_) | IRExpr::Data(_) => false,
+        _ => true,
+    }
+}
+
 fn operation(instr: &IRInst) -> Operation {
     let mut op = Operation::default();
     match instr {
@@ -126,7 +137,7 @@ fn operation(instr: &IRInst) -> Operation {
             reads(src, &mut op.dependencies);
             if let IRExpr::Variable(variable) = dest {
                 op.write = Some(*variable);
-                op.constant_write = super::fold_constants::is_constant(src);
+                op.pure_write = pure(src);
                 op.offset = offset(src);
                 if let IRExpr::Argument(ordinal) = src {
                     op.argument = Some(*ordinal);
@@ -141,7 +152,7 @@ fn operation(instr: &IRInst) -> Operation {
         } => {
             reads(value, &mut op.dependencies);
             op.write = Some(*variable);
-            op.constant_write = super::fold_constants::is_constant(value);
+            op.pure_write = pure(value);
             op.offset = offset(value);
             if let IRExpr::Argument(ordinal) = value {
                 op.argument = Some(*ordinal);

@@ -56,8 +56,14 @@ impl Types {
                 Parameter::Slot { variable, register } => {
                     result.variables.insert(*variable, register.size());
                 }
+                Parameter::Value { variable, size } => {
+                    result.variables.insert(*variable, *size);
+                }
                 Parameter::Native { ordinal, register } => {
                     result.arguments.insert(*ordinal, register.size());
+                }
+                Parameter::Input { ordinal, size } => {
+                    result.arguments.insert(*ordinal, *size);
                 }
             }
         }
@@ -300,7 +306,8 @@ pub(super) fn run(program: &mut Program) {
         let function = &program.functions[id];
         let mut known = HashMap::new();
         for (parameter, value) in function.parameters.iter().zip(&incoming[id]) {
-            if let Parameter::Slot { variable, .. } = parameter {
+            if let Parameter::Slot { variable, .. } | Parameter::Value { variable, .. } = parameter
+            {
                 known.insert(*variable, value.clone());
             }
         }
@@ -337,7 +344,9 @@ pub(super) fn run(program: &mut Program) {
             .into_iter()
             .enumerate()
             .filter_map(|(index, parameter)| {
-                if let Parameter::Slot { variable, .. } = &parameter {
+                if let Parameter::Slot { variable, .. } | Parameter::Value { variable, .. } =
+                    &parameter
+                {
                     known.insert(*variable, incoming[id][index].clone());
                 }
                 (!removed[id].contains(&index)).then_some(parameter)

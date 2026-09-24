@@ -21,7 +21,8 @@ fn read_expr(expr: &IRExpr, live: &mut HashSet<NativeFlag>) {
         | IRExpr::CU32(_)
         | IRExpr::CU64(_)
         | IRExpr::Variable(_)
-        | IRExpr::Bool(_) => {}
+        | IRExpr::Bool(_)
+        | IRExpr::Stack { .. } => {}
     }
 }
 

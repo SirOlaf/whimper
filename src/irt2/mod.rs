@@ -174,6 +174,8 @@ struct FunctionLifter {
     declarations: Vec<(VariableId, VariableType)>,
     source_variables: HashMap<t1::VariableId, VariableId>,
     registers: HashMap<Register, IRExpr>,
+    stack: HashMap<i64, IRExpr>,
+    stack_widths: HashMap<i64, usize>,
     widths: HashMap<VariableId, usize>,
     argument_widths: HashMap<usize, usize>,
     data_ids: HashMap<u64, DataId>,
@@ -185,6 +187,7 @@ impl FunctionLifter {
         owner: SyntheticFunctionId,
         data_ids: HashMap<u64, DataId>,
         data_widths: HashMap<DataId, usize>,
+        stack_widths: HashMap<i64, usize>,
     ) -> Self {
         Self {
             owner,
@@ -192,6 +195,8 @@ impl FunctionLifter {
             declarations: Vec::new(),
             source_variables: HashMap::new(),
             registers: HashMap::new(),
+            stack: HashMap::new(),
+            stack_widths,
             widths: HashMap::new(),
             argument_widths: HashMap::new(),
             data_ids,
@@ -315,6 +320,60 @@ impl FunctionLifter {
         self.registers.insert(full, next);
     }
 
+    fn stack_base(offset: i64, size: usize) -> i64 {
+        let base = offset.div_euclid(8) * 8;
+        assert!(
+            offset + size as i64 <= base + 8,
+            "stack access crosses a cell"
+        );
+        base
+    }
+
+    fn read_stack(&self, offset: i64, size: usize) -> IRExpr {
+        let base = Self::stack_base(offset, size);
+        let value = self
+            .stack
+            .get(&base)
+            .unwrap_or_else(|| panic!("missing stack value at {offset:+}"));
+        self.extract(value.clone(), (offset - base) as usize, size)
+    }
+
+    fn write_stack(&mut self, offset: i64, size: usize, value: IRExpr) -> IRInst {
+        let base = Self::stack_base(offset, size);
+        let shift = ((offset - base) * 8) as usize;
+        let cell_width = self.stack_widths.get(&base).copied().unwrap_or(size);
+        let value = values::convert(value, size, cell_width, false);
+        let next = if size == cell_width && shift == 0 {
+            value
+        } else {
+            let original = self
+                .stack
+                .get(&base)
+                .cloned()
+                .expect("missing preserved stack bytes");
+            let mask = values::mask(size) << shift;
+            let preserved = values::binary(
+                IRBinOpKind::And,
+                original,
+                values::literal(!mask, cell_width),
+                cell_width,
+            );
+            let inserted = values::binary(
+                IRBinOpKind::Shl,
+                value,
+                IRExpr::CU8(shift as u8),
+                cell_width,
+            );
+            values::binary(IRBinOpKind::BitOr, preserved, inserted, cell_width)
+        };
+        let variable = self.slot(VariableType::Unknown(Some(cell_width)));
+        self.stack.insert(base, IRExpr::Variable(variable));
+        IRInst::AssignVariable {
+            variable,
+            value: next,
+        }
+    }
+
     fn expr(&mut self, expr: &t1::IRExpr, before: &mut Vec<IRInst>) -> IRExpr {
         match expr {
             t1::IRExpr::BinOp { kind, lhs, rhs } => {
@@ -362,6 +421,7 @@ impl FunctionLifter {
                 IRExpr::Variable(variable)
             }
             t1::IRExpr::Reg(register) => self.read_register(*register),
+            t1::IRExpr::Stack { offset, size } => self.read_stack(*offset, *size),
             t1::IRExpr::CU8(value) => IRExpr::CU8(*value),
             t1::IRExpr::CU32(value) => IRExpr::CU32(*value),
             t1::IRExpr::CU64(value) => IRExpr::CU64(*value),
@@ -392,6 +452,10 @@ impl FunctionLifter {
                             variable,
                             value: src,
                         }
+                    }
+                    t1::IRExpr::Stack { offset, size } => {
+                        let width = self.width(&src).expect("unknown stack assignment width");
+                        self.write_stack(*offset, *size, values::convert(src, width, *size, false))
                     }
                     t1::IRExpr::Deref { address, size } => {
                         let width = Some(*size);
@@ -463,36 +527,49 @@ fn lift_function(
     entry: bool,
     data_ids: HashMap<u64, DataId>,
     data_widths: HashMap<DataId, usize>,
+    stack_widths: HashMap<i64, usize>,
 ) -> SyntheticFunction {
     let owner = SyntheticFunctionId { id };
-    let mut lifter = FunctionLifter::new(owner, data_ids, data_widths);
+    let mut lifter = FunctionLifter::new(owner, data_ids, data_widths, stack_widths);
 
     let parameters = source
         .parameters
         .iter()
         .enumerate()
-        .map(|(index, register)| {
-            if entry {
+        .map(|(index, parameter)| match *parameter {
+            t1::Parameter::Register(register) if entry => {
                 lifter.argument_widths.insert(index + 1, register.size());
                 lifter.registers.insert(
                     register.full_register(),
-                    widen_register_value(*register, IRExpr::Argument(index + 1)),
+                    widen_register_value(register, IRExpr::Argument(index + 1)),
                 );
                 Parameter::Native {
                     ordinal: index + 1,
-                    register: *register,
+                    register,
                 }
-            } else {
+            }
+            t1::Parameter::Register(register) => {
                 let variable = lifter.variable_id();
                 lifter.widths.insert(variable, register.size());
                 lifter.registers.insert(
                     register.full_register(),
-                    widen_register_value(*register, IRExpr::Variable(variable)),
+                    widen_register_value(register, IRExpr::Variable(variable)),
                 );
-                Parameter::Slot {
-                    variable,
-                    register: *register,
+                Parameter::Slot { variable, register }
+            }
+            t1::Parameter::Stack { offset, size } if entry => {
+                lifter.argument_widths.insert(index + 1, size);
+                lifter.stack.insert(offset, IRExpr::Argument(index + 1));
+                Parameter::Input {
+                    ordinal: index + 1,
+                    size,
                 }
+            }
+            t1::Parameter::Stack { offset, size } => {
+                let variable = lifter.variable_id();
+                lifter.widths.insert(variable, size);
+                lifter.stack.insert(offset, IRExpr::Variable(variable));
+                Parameter::Value { variable, size }
             }
         })
         .collect();
@@ -530,6 +607,7 @@ fn lift_function(
 
 pub fn lift(source: &t1::Program) -> Program {
     let (data, data_ids, data_widths) = collect_data(source);
+    let stack_widths = &source.stack_widths;
     let mut program = Program {
         entry_address: source.entry_address,
         entry: source
@@ -546,6 +624,7 @@ pub fn lift(source: &t1::Program) -> Program {
                     source.entry.is_some_and(|e| e.id == id),
                     data_ids.clone(),
                     data_widths.clone(),
+                    stack_widths.clone(),
                 )
             })
             .collect(),

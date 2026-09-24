@@ -323,41 +323,42 @@ pub(super) fn run(program: &mut Program) {
         for (_, instr) in &mut function.body {
             instruction(instr, &mut known, &types);
         }
-        let flow = Flow::from_function(function);
-        let mut dead = HashSet::new();
-        for node in &flow.nodes {
-            if !node.operation.constant_write {
-                continue;
-            }
-            let Some(variable) = node.operation.write else {
-                continue;
-            };
-            let mut pending = node.successors.clone();
-            let mut visited = HashSet::new();
-            let mut read = false;
-            while let Some(next) = pending.pop() {
-                if !visited.insert(next) {
+        loop {
+            let flow = Flow::from_function(function);
+            let mut dead = HashSet::new();
+            for node in &flow.nodes {
+                if !node.operation.pure_write {
                     continue;
                 }
-                let next = &flow.nodes[next];
-                if next.operation.reads(variable) {
-                    read = true;
-                    break;
+                let Some(variable) = node.operation.write else {
+                    continue;
+                };
+                let mut pending = node.successors.clone();
+                let mut visited = HashSet::new();
+                let mut read = false;
+                while let Some(next) = pending.pop() {
+                    if !visited.insert(next) {
+                        continue;
+                    }
+                    let next = &flow.nodes[next];
+                    if next.operation.reads(variable) {
+                        read = true;
+                        break;
+                    }
+                    if next.operation.write != Some(variable) {
+                        pending.extend(&next.successors);
+                    }
                 }
-                if next.operation.write != Some(variable) {
-                    pending.extend(&next.successors);
+                if !read && let Some(address) = node.instruction {
+                    dead.insert(address);
                 }
             }
-            if !read && let Some(address) = node.instruction {
-                dead.insert(address);
+            if dead.is_empty() {
+                break;
             }
+            remove_body(&mut function.body, &dead);
         }
-        remove_body(&mut function.body, &dead);
     }
-}
-
-pub(super) fn is_constant(expr: &IRExpr) -> bool {
-    constant(expr).is_some()
 }
 
 fn collect_types(instr: &IRInst, types: &mut HashMap<VariableId, VariableType>) {

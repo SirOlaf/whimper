@@ -406,7 +406,7 @@ fn max_variable_id(function: &SyntheticFunction) -> Option<usize> {
 
     let mut maximum = None;
     for parameter in &function.parameters {
-        if let Parameter::Slot { variable, .. } = parameter {
+        if let Parameter::Slot { variable, .. } | Parameter::Value { variable, .. } = parameter {
             include(&mut maximum, variable.id);
         }
     }
@@ -417,6 +417,13 @@ fn max_variable_id(function: &SyntheticFunction) -> Option<usize> {
 }
 
 fn lower_function(function: &mut SyntheticFunction, function_id: SyntheticFunctionId) {
+    if function
+        .parameters
+        .iter()
+        .any(|parameter| matches!(parameter, Parameter::Value { .. } | Parameter::Input { .. }))
+    {
+        return;
+    }
     fn has_self_call(instr: &IRInst, function_id: SyntheticFunctionId) -> bool {
         match instr {
             IRInst::CallSynthetic { function, .. } => *function == function_id,
@@ -462,6 +469,7 @@ fn lower_function(function: &mut SyntheticFunction, function_id: SyntheticFuncti
                 variable: *variable,
                 register: *register,
             }),
+            Parameter::Value { .. } | Parameter::Input { .. } => unreachable!(),
         }
     }
 

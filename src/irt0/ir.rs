@@ -68,6 +68,12 @@ pub enum IRExpr {
     // Native
     Reg(Register),
     Flag(NativeFlag),
+    /// A byte range at a fixed offset from the entry stack pointer. Tier 2
+    /// turns this into local values before source-like control flow is built.
+    Stack {
+        offset: i64,
+        size: usize,
+    },
 
     // Consts
     CU8(u8),
@@ -97,6 +103,88 @@ fn bin_op(kind: IRBinOpKind, lhs: IRExpr, rhs: IRExpr) -> IRExpr {
         kind,
         lhs: Box::new(lhs),
         rhs: Box::new(rhs),
+    }
+}
+
+fn stack_address(address: &IRExpr) -> Option<i64> {
+    match address {
+        IRExpr::Reg(Register::RSP) => Some(0),
+        IRExpr::BinOp {
+            kind: IRBinOpKind::Add,
+            lhs,
+            rhs,
+        } => {
+            let IRExpr::Reg(Register::RSP) = lhs.as_ref() else {
+                return None;
+            };
+            match rhs.as_ref() {
+                IRExpr::CU64(value) => Some(*value as i64),
+                IRExpr::CU32(value) => Some(*value as i32 as i64),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn resolve_stack_expr(expr: IRExpr, depth: i64) -> IRExpr {
+    match expr {
+        IRExpr::Deref { address, size } => {
+            if let Some(displacement) = stack_address(&address) {
+                IRExpr::Stack {
+                    offset: displacement - depth,
+                    size,
+                }
+            } else {
+                IRExpr::Deref {
+                    address: Box::new(resolve_stack_expr(*address, depth)),
+                    size,
+                }
+            }
+        }
+        IRExpr::BinOp { kind, lhs, rhs } => bin_op(
+            kind,
+            resolve_stack_expr(*lhs, depth),
+            resolve_stack_expr(*rhs, depth),
+        ),
+        IRExpr::ExtractBytes {
+            value,
+            offset,
+            size,
+        } => IRExpr::ExtractBytes {
+            value: Box::new(resolve_stack_expr(*value, depth)),
+            offset,
+            size,
+        },
+        IRExpr::ZeroExtend { value, size } => IRExpr::ZeroExtend {
+            value: Box::new(resolve_stack_expr(*value, depth)),
+            size,
+        },
+        IRExpr::SignExtend { value, size } => IRExpr::SignExtend {
+            value: Box::new(resolve_stack_expr(*value, depth)),
+            size,
+        },
+        IRExpr::Reg(Register::RSP) => panic!("unresolved stack pointer use"),
+        other => other,
+    }
+}
+
+fn resolve_stack(instr: IRInst, depth: i64) -> IRInst {
+    match instr {
+        IRInst::Asgn { dest, src } => IRInst::Asgn {
+            dest: resolve_stack_expr(dest, depth),
+            src: resolve_stack_expr(src, depth),
+        },
+        IRInst::If(condition, inner) => IRInst::If(
+            resolve_stack_expr(condition, depth),
+            Box::new(resolve_stack(*inner, depth)),
+        ),
+        IRInst::Jmp(target) => IRInst::Jmp(resolve_stack_expr(target, depth)),
+        IRInst::Ret(value) => IRInst::Ret(value.map(|value| resolve_stack_expr(value, depth))),
+        IRInst::SetFlagsFrom(flags, expr) => {
+            IRInst::SetFlagsFrom(flags, resolve_stack_expr(expr, depth))
+        }
+        other => other,
     }
 }
 
@@ -177,9 +265,11 @@ fn lift_op(x: Instruction, i: u32) -> IRExpr {
         OpKind::Register => IRExpr::Reg(x.op_register(i)),
         OpKind::NearBranch64 => IRExpr::CU64(x.near_branch_target()),
         OpKind::Immediate8 => IRExpr::CU8(x.immediate8()),
+        OpKind::Immediate16 => IRExpr::CU32(x.immediate16() as u32),
         OpKind::Immediate32 => IRExpr::CU32(x.immediate32()),
         OpKind::Immediate64 => IRExpr::CU64(x.immediate64()),
         OpKind::Immediate8to32 => IRExpr::CU32(x.immediate8to32() as u32),
+        OpKind::Immediate8to16 => IRExpr::CU32(x.immediate8to16() as u16 as u32),
         OpKind::Immediate8to64 => IRExpr::CU64(x.immediate8to64() as u64),
         OpKind::Immediate32to64 => IRExpr::CU64(x.immediate32to64() as u64),
         _ => {
@@ -292,95 +382,77 @@ fn lift_imul(x: Instruction) -> Vec<IRInst> {
 }
 
 fn lift_mov(x: Instruction) -> Vec<IRInst> {
-    match x.code() {
-        Code::Mov_r64_rm64
-        | Code::Mov_r32_rm32
-        | Code::Mov_rm32_r32
-        | Code::Mov_rm64_r64
-        | Code::Mov_r32_imm32
-        | Code::Mov_r64_imm64 => {
-            vec![IRInst::Asgn {
-                dest: lift_op(x, 0),
-                src: lift_op(x, 1),
-            }]
-        }
-        _ => {
-            panic!("{:?}", x)
+    for index in 0..x.op_count() {
+        match x.op_kind(index) {
+            OpKind::Register => assert!(
+                x.op_register(index).is_gpr(),
+                "unsupported MOV register: {x:?}"
+            ),
+            OpKind::Memory => assert!(
+                matches!(x.memory_size().size(), 1 | 2 | 4 | 8),
+                "unsupported MOV width: {x:?}"
+            ),
+            OpKind::Immediate8
+            | OpKind::Immediate16
+            | OpKind::Immediate32
+            | OpKind::Immediate64
+            | OpKind::Immediate8to16
+            | OpKind::Immediate8to32
+            | OpKind::Immediate8to64
+            | OpKind::Immediate32to64 => {}
+            _ => panic!("unsupported MOV operand: {x:?}"),
         }
     }
+    vec![IRInst::Asgn {
+        dest: lift_op(x, 0),
+        src: lift_op(x, 1),
+    }]
 }
 
-fn lift_add(x: Instruction) -> Vec<IRInst> {
-    match x.code() {
-        Code::Add_r32_rm32 | Code::Add_rm32_r32 => {
-            let add_expr = IRExpr::BinOp {
-                kind: IRBinOpKind::Add,
-                lhs: Box::new(lift_op(x, 0)),
-                rhs: Box::new(lift_op(x, 1)),
-            };
-            vec![
-                IRInst::SetFlagsFrom(
-                    HashSet::from([
-                        NativeFlag::Carry,
-                        NativeFlag::AuxCarry,
-                        NativeFlag::Overflow,
-                        NativeFlag::Parity,
-                        NativeFlag::Sign,
-                        NativeFlag::Zero,
-                    ]),
-                    add_expr.clone(),
-                ),
-                IRInst::Asgn {
-                    dest: lift_op(x, 0),
-                    src: add_expr.clone(),
-                },
-            ]
-        }
-        _ => {
-            panic!("{:?}", x)
-        }
+fn lift_arithmetic(x: Instruction, kind: IRBinOpKind) -> Vec<IRInst> {
+    let operand = lift_op(x, 0);
+    let rhs = if matches!(x.mnemonic(), Mnemonic::Inc | Mnemonic::Dec) {
+        IRExpr::CU8(1)
+    } else {
+        lift_op(x, 1)
+    };
+    let result = bin_op(kind, operand.clone(), rhs);
+    let mut flags = HashSet::from([
+        NativeFlag::AuxCarry,
+        NativeFlag::Overflow,
+        NativeFlag::Parity,
+        NativeFlag::Sign,
+        NativeFlag::Zero,
+    ]);
+    if !matches!(x.mnemonic(), Mnemonic::Inc | Mnemonic::Dec) {
+        flags.insert(NativeFlag::Carry);
     }
+    vec![
+        IRInst::SetFlagsFrom(flags, result.clone()),
+        IRInst::Asgn {
+            dest: operand,
+            src: result,
+        },
+    ]
 }
 
-fn lift_sub(x: Instruction) -> Vec<IRInst> {
-    match x.code() {
-        Code::Sub_r32_rm32 => {
-            let sub_expr = IRExpr::BinOp {
-                kind: IRBinOpKind::Sub,
-                lhs: Box::new(lift_op(x, 0)),
-                rhs: Box::new(lift_op(x, 1)),
-            };
-            vec![
-                IRInst::SetFlagsFrom(
-                    HashSet::from([
-                        NativeFlag::Overflow,
-                        NativeFlag::Sign,
-                        NativeFlag::Zero,
-                        NativeFlag::AuxCarry,
-                        NativeFlag::Parity,
-                        NativeFlag::Carry,
-                    ]),
-                    sub_expr.clone(),
-                ),
-                IRInst::Asgn {
-                    dest: lift_op(x, 0),
-                    src: sub_expr.clone(),
-                },
-            ]
-        }
-        _ => {
-            panic!("{:?}", x)
-        }
-    }
+fn lift_movsxd(x: Instruction) -> Vec<IRInst> {
+    vec![IRInst::Asgn {
+        dest: lift_op(x, 0),
+        src: IRExpr::SignExtend {
+            value: Box::new(lift_op(x, 1)),
+            size: 8,
+        },
+    }]
 }
 
 fn lift_cond(x: Instruction) -> Vec<IRInst> {
     match x.mnemonic() {
         Mnemonic::Test => {
-            let mut res = vec![IRInst::ClearFlags(HashSet::from([
-                NativeFlag::Carry,
-                NativeFlag::Overflow,
-            ]))];
+            let mut res = vec![
+                IRInst::ClearFlags(HashSet::from([NativeFlag::Carry, NativeFlag::Overflow])),
+                IRInst::InvalidateFlags(HashSet::from([NativeFlag::AuxCarry])),
+            ];
             match x.code() {
                 Code::Test_rm8_r8 | Code::Test_rm32_r32 | Code::Test_rm64_r64 => {
                     let and_expr = IRExpr::BinOp {
@@ -399,27 +471,24 @@ fn lift_cond(x: Instruction) -> Vec<IRInst> {
             }
             res
         }
-        Mnemonic::Cmp => match x.code() {
-            Code::Cmp_r32_rm32 | Code::Cmp_rm32_r32 => {
-                let sub_expr = IRExpr::BinOp {
-                    kind: IRBinOpKind::Sub,
-                    lhs: Box::new(lift_op(x, 0)),
-                    rhs: Box::new(lift_op(x, 1)),
-                };
-                vec![IRInst::SetFlagsFrom(
-                    HashSet::from([
-                        NativeFlag::Overflow,
-                        NativeFlag::Sign,
-                        NativeFlag::Zero,
-                        NativeFlag::AuxCarry,
-                        NativeFlag::Parity,
-                        NativeFlag::Carry,
-                    ]),
-                    sub_expr,
-                )]
-            }
-            _ => panic!("{:?}", x),
-        },
+        Mnemonic::Cmp => {
+            let sub_expr = IRExpr::BinOp {
+                kind: IRBinOpKind::Sub,
+                lhs: Box::new(lift_op(x, 0)),
+                rhs: Box::new(lift_op(x, 1)),
+            };
+            vec![IRInst::SetFlagsFrom(
+                HashSet::from([
+                    NativeFlag::Overflow,
+                    NativeFlag::Sign,
+                    NativeFlag::Zero,
+                    NativeFlag::AuxCarry,
+                    NativeFlag::Parity,
+                    NativeFlag::Carry,
+                ]),
+                sub_expr,
+            )]
+        }
         _ => {
             panic!("Unlifted cond: {:?}", x)
         }
@@ -428,16 +497,27 @@ fn lift_cond(x: Instruction) -> Vec<IRInst> {
 
 fn lift_jmp(x: Instruction, signed_compare: Option<(IRExpr, IRExpr)>) -> Vec<IRInst> {
     match x.code() {
-        Code::Jg_rel8_64 | Code::Jg_rel32_64 => {
-            let (lhs, rhs) = signed_compare.expect("JG must follow a supported compare");
-            vec![IRInst::If(
-                IRExpr::BinOp {
-                    kind: IRBinOpKind::SignedGt,
-                    lhs: Box::new(lhs),
-                    rhs: Box::new(rhs),
-                },
-                Box::new(IRInst::Jmp(lift_op(x, 0))),
-            )]
+        Code::Jg_rel8_64
+        | Code::Jg_rel32_64
+        | Code::Jl_rel8_64
+        | Code::Jl_rel32_64
+        | Code::Jge_rel8_64
+        | Code::Jge_rel32_64
+        | Code::Jle_rel8_64
+        | Code::Jle_rel32_64 => {
+            let (lhs, rhs) = signed_compare.expect("signed jump must follow a supported compare");
+            let (lhs, rhs) = if matches!(x.mnemonic(), Mnemonic::Jl | Mnemonic::Jge) {
+                (rhs, lhs)
+            } else {
+                (lhs, rhs)
+            };
+            let gt = bin_op(IRBinOpKind::SignedGt, lhs, rhs);
+            let condition = if matches!(x.mnemonic(), Mnemonic::Jge | Mnemonic::Jle) {
+                bin_op(IRBinOpKind::Eq, gt, IRExpr::CU8(0))
+            } else {
+                gt
+            };
+            vec![IRInst::If(condition, Box::new(IRInst::Jmp(lift_op(x, 0))))]
         }
         Code::Je_rel8_64 | Code::Je_rel32_64 | Code::Jne_rel8_64 | Code::Jne_rel32_64 => {
             vec![IRInst::If(
@@ -483,62 +563,40 @@ fn lift_jmp(x: Instruction, signed_compare: Option<(IRExpr, IRExpr)>) -> Vec<IRI
     }
 }
 
-fn lift_shl(x: Instruction) -> Vec<IRInst> {
-    match x.code() {
-        Code::Shl_rm32_imm8 => {
-            let expr = IRExpr::BinOp {
-                kind: IRBinOpKind::Shl,
-                lhs: Box::new(lift_op(x, 0)),
-                rhs: Box::new(lift_op(x, 1)),
-            };
-            vec![
-                IRInst::SetFlagsFrom(
-                    HashSet::from([
-                        NativeFlag::Sign,
-                        NativeFlag::Zero,
-                        NativeFlag::AuxCarry,
-                        NativeFlag::Parity,
-                        NativeFlag::Carry,
-                    ]),
-                    expr.clone(),
-                ),
-                IRInst::Asgn {
-                    dest: lift_op(x, 0),
-                    src: expr.clone(),
-                },
-            ]
-        }
-        _ => panic!("{:?}", x),
-    }
-}
-
-fn lift_shr(x: Instruction) -> Vec<IRInst> {
-    match x.code() {
-        Code::Shr_rm32_imm8 => {
-            let expr = IRExpr::BinOp {
-                kind: IRBinOpKind::Shr,
-                lhs: Box::new(lift_op(x, 0)),
-                rhs: Box::new(lift_op(x, 1)),
-            };
-            vec![
-                IRInst::SetFlagsFrom(
-                    HashSet::from([
-                        NativeFlag::Sign,
-                        NativeFlag::Zero,
-                        NativeFlag::AuxCarry,
-                        NativeFlag::Parity,
-                        NativeFlag::Carry,
-                    ]),
-                    expr.clone(),
-                ),
-                IRInst::Asgn {
-                    dest: lift_op(x, 0),
-                    src: expr,
-                },
-            ]
-        }
-        _ => panic!("{:?}", x),
-    }
+fn lift_shift(x: Instruction, kind: IRBinOpKind) -> Vec<IRInst> {
+    let count = lift_op(x, 1);
+    let count = if matches!(count, IRExpr::Reg(Register::CL)) {
+        let width = if x.op_kind(0) == OpKind::Register {
+            x.op0_register().size()
+        } else {
+            x.memory_size().size()
+        };
+        bin_op(
+            IRBinOpKind::And,
+            count,
+            IRExpr::CU8(if width == 8 { 63 } else { 31 }),
+        )
+    } else {
+        count
+    };
+    let expr = bin_op(kind, lift_op(x, 0), count);
+    vec![
+        IRInst::SetFlagsFrom(
+            HashSet::from([
+                NativeFlag::Sign,
+                NativeFlag::Zero,
+                NativeFlag::AuxCarry,
+                NativeFlag::Parity,
+                NativeFlag::Carry,
+                NativeFlag::Overflow,
+            ]),
+            expr.clone(),
+        ),
+        IRInst::Asgn {
+            dest: lift_op(x, 0),
+            src: expr,
+        },
+    ]
 }
 
 fn lift_xor(x: Instruction) -> Vec<IRInst> {
@@ -551,6 +609,7 @@ fn lift_xor(x: Instruction) -> Vec<IRInst> {
 
     vec![
         IRInst::ClearFlags(HashSet::from([NativeFlag::Carry, NativeFlag::Overflow])),
+        IRInst::InvalidateFlags(HashSet::from([NativeFlag::AuxCarry])),
         IRInst::SetFlagsFrom(
             HashSet::from([NativeFlag::Sign, NativeFlag::Zero, NativeFlag::Parity]),
             IRExpr::CU32(0),
@@ -586,30 +645,89 @@ pub fn lift_to_irt0(code: &[u8], base_offset: usize) -> Program {
         instructions: Vec::new(),
     };
     let mut last_compare = None;
+    let mut stack_depth = 0i64;
     while decoder.can_decode() {
         decoder.decode_out(&mut instruction);
 
-        let compare_for_jump = if instruction.mnemonic() == Mnemonic::Jg {
+        let compare_for_jump = if matches!(
+            instruction.mnemonic(),
+            Mnemonic::Jg | Mnemonic::Jl | Mnemonic::Jge | Mnemonic::Jle
+        ) {
             last_compare.clone()
         } else {
             None
         };
         let tmp_instr = match instruction.mnemonic() {
             Mnemonic::Mov => Some(lift_mov(instruction)),
+            Mnemonic::Movsxd => Some(lift_movsxd(instruction)),
             Mnemonic::Movzx | Mnemonic::Movsx => Some(lift_extend(instruction)),
             Mnemonic::Lea => Some(lift_lea(instruction)),
             Mnemonic::Imul => Some(lift_imul(instruction)),
-            Mnemonic::Add => Some(lift_add(instruction)),
-            Mnemonic::Sub => Some(lift_sub(instruction)),
+            Mnemonic::Add | Mnemonic::Inc => Some(lift_arithmetic(instruction, IRBinOpKind::Add)),
+            Mnemonic::Sub | Mnemonic::Dec => Some(lift_arithmetic(instruction, IRBinOpKind::Sub)),
+            Mnemonic::Push => {
+                assert_eq!(
+                    instruction.op_kind(0),
+                    OpKind::Register,
+                    "unsupported push: {instruction:?}"
+                );
+                assert!(
+                    instruction.op0_register().is_gpr64(),
+                    "unsupported push width: {instruction:?}"
+                );
+                stack_depth += 8;
+                Some(vec![IRInst::Asgn {
+                    dest: IRExpr::Stack {
+                        offset: -stack_depth,
+                        size: 8,
+                    },
+                    src: lift_op(instruction, 0),
+                }])
+            }
+            Mnemonic::Pop => {
+                assert_eq!(
+                    instruction.op_kind(0),
+                    OpKind::Register,
+                    "unsupported pop: {instruction:?}"
+                );
+                assert!(
+                    instruction.op0_register().is_gpr64(),
+                    "unsupported pop width: {instruction:?}"
+                );
+                let popped = IRInst::Asgn {
+                    dest: lift_op(instruction, 0),
+                    src: IRExpr::Stack {
+                        offset: -stack_depth,
+                        size: 8,
+                    },
+                };
+                stack_depth -= 8;
+                Some(vec![popped])
+            }
+            Mnemonic::Cmovne => Some(vec![IRInst::If(
+                bin_op(
+                    IRBinOpKind::Eq,
+                    IRExpr::Flag(NativeFlag::Zero),
+                    IRExpr::CU8(0),
+                ),
+                Box::new(IRInst::Asgn {
+                    dest: lift_op(instruction, 0),
+                    src: lift_op(instruction, 1),
+                }),
+            )]),
             Mnemonic::Test | Mnemonic::Cmp => Some(lift_cond(instruction)),
             Mnemonic::Je
             | Mnemonic::Jne
             | Mnemonic::Jb
             | Mnemonic::Jae
             | Mnemonic::Jbe
-            | Mnemonic::Jg => Some(lift_jmp(instruction, compare_for_jump)),
-            Mnemonic::Shl => Some(lift_shl(instruction)),
-            Mnemonic::Shr => Some(lift_shr(instruction)),
+            | Mnemonic::Jg
+            | Mnemonic::Jl
+            | Mnemonic::Jge
+            | Mnemonic::Jle => Some(lift_jmp(instruction, compare_for_jump)),
+            Mnemonic::Jmp => Some(vec![IRInst::Jmp(lift_op(instruction, 0))]),
+            Mnemonic::Shl => Some(lift_shift(instruction, IRBinOpKind::Shl)),
+            Mnemonic::Shr => Some(lift_shift(instruction, IRBinOpKind::Shr)),
             Mnemonic::Xor => Some(lift_xor(instruction)),
             Mnemonic::Ret => Some(lift_ret(instruction)),
             Mnemonic::Nop => None,
@@ -619,16 +737,19 @@ pub fn lift_to_irt0(code: &[u8], base_offset: usize) -> Program {
             }
         };
         if let Some(instrs) = tmp_instr {
-            program.instructions.extend(
-                instrs
-                    .iter()
-                    .map(|x| (instruction.ip().try_into().unwrap(), x.clone())),
-            );
+            program.instructions.extend(instrs.iter().map(|x| {
+                (
+                    instruction.ip().try_into().unwrap(),
+                    resolve_stack(x.clone(), stack_depth),
+                )
+            }));
         }
 
         last_compare = (instruction.mnemonic() == Mnemonic::Cmp)
             .then(|| (lift_op(instruction, 0), lift_op(instruction, 1)));
     }
+
+    assert_eq!(stack_depth, 0, "unbalanced native stack frame");
 
     program
 }

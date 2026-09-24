@@ -71,6 +71,7 @@ fn lift_expr(expr: IRT0Expr) -> IRExpr {
             size,
         },
         IRT0Expr::Reg(reg) => IRExpr::Reg(reg),
+        IRT0Expr::Stack { offset, size } => IRExpr::Stack { offset, size },
         IRT0Expr::Flag(flag) => IRExpr::Flag(lift_flag(flag)),
         IRT0Expr::CU8(value) => IRExpr::CU8(value),
         IRT0Expr::CU32(value) => IRExpr::CU32(value),
@@ -92,8 +93,157 @@ fn jump_target(expr: &IRT0Expr, offset: usize) -> Option<usize> {
     }
 }
 
+fn stack_references(expr: &IRT0Expr, offsets: &mut Vec<i64>) {
+    match expr {
+        IRT0Expr::Stack { offset, .. } => offsets.push(*offset),
+        IRT0Expr::BinOp { lhs, rhs, .. } => {
+            stack_references(lhs, offsets);
+            stack_references(rhs, offsets);
+        }
+        IRT0Expr::Deref { address, .. }
+        | IRT0Expr::ExtractBytes { value: address, .. }
+        | IRT0Expr::ZeroExtend { value: address, .. }
+        | IRT0Expr::SignExtend { value: address, .. } => stack_references(address, offsets),
+        _ => {}
+    }
+}
+
+fn instruction_stack_references(instr: &IRT0Inst, offsets: &mut Vec<i64>) {
+    match instr {
+        IRT0Inst::Asgn { dest, src } => {
+            stack_references(dest, offsets);
+            stack_references(src, offsets);
+        }
+        IRT0Inst::If(condition, inner) => {
+            stack_references(condition, offsets);
+            instruction_stack_references(inner, offsets);
+        }
+        IRT0Inst::Jmp(value) | IRT0Inst::Ret(Some(value)) | IRT0Inst::SetFlagsFrom(_, value) => {
+            stack_references(value, offsets)
+        }
+        _ => {}
+    }
+}
+
+fn expression_reads_register(expr: &IRT0Expr, register: Register) -> bool {
+    match expr {
+        IRT0Expr::Reg(found) => found.full_register() == register,
+        IRT0Expr::BinOp { lhs, rhs, .. } => {
+            expression_reads_register(lhs, register) || expression_reads_register(rhs, register)
+        }
+        IRT0Expr::Deref { address, .. }
+        | IRT0Expr::ExtractBytes { value: address, .. }
+        | IRT0Expr::ZeroExtend { value: address, .. }
+        | IRT0Expr::SignExtend { value: address, .. } => {
+            expression_reads_register(address, register)
+        }
+        _ => false,
+    }
+}
+
+fn instruction_reads_register(instr: &IRT0Inst, register: Register) -> bool {
+    match instr {
+        IRT0Inst::Asgn { dest, src } => {
+            expression_reads_register(src, register)
+                || !matches!(dest, IRT0Expr::Reg(_)) && expression_reads_register(dest, register)
+        }
+        IRT0Inst::If(condition, inner) => {
+            expression_reads_register(condition, register)
+                || instruction_reads_register(inner, register)
+        }
+        IRT0Inst::Jmp(value) | IRT0Inst::Ret(Some(value)) | IRT0Inst::SetFlagsFrom(_, value) => {
+            expression_reads_register(value, register)
+        }
+        _ => false,
+    }
+}
+
+/// Callee-saved register spills are ABI bookkeeping. Keep their exact native
+/// effects in Tier 0, but remove a matched spill/reload when the slot has no
+/// other use before building source-like state in this tier.
+fn strip_frame_saves(source: &[(usize, IRT0Inst)]) -> Vec<(usize, IRT0Inst)> {
+    let mut references: HashMap<i64, Vec<usize>> = HashMap::new();
+    for (index, (_, instr)) in source.iter().enumerate() {
+        let mut offsets = Vec::new();
+        instruction_stack_references(instr, &mut offsets);
+        for offset in offsets {
+            references.entry(offset).or_default().push(index);
+        }
+    }
+    let mut remove = HashSet::new();
+    for (&offset, indices) in &references {
+        let [save, restore] = indices.as_slice() else {
+            continue;
+        };
+        let IRT0Inst::Asgn {
+            dest:
+                IRT0Expr::Stack {
+                    offset: saved,
+                    size: 8,
+                },
+            src: IRT0Expr::Reg(register),
+        } = &source[*save].1
+        else {
+            continue;
+        };
+        let IRT0Inst::Asgn {
+            dest: IRT0Expr::Reg(restored),
+            src:
+                IRT0Expr::Stack {
+                    offset: loaded,
+                    size: 8,
+                },
+        } = &source[*restore].1
+        else {
+            continue;
+        };
+        let nonvolatile = matches!(
+            register.full_register(),
+            Register::RBX
+                | Register::RBP
+                | Register::RSI
+                | Register::RDI
+                | Register::R12
+                | Register::R13
+                | Register::R14
+                | Register::R15
+        );
+        let mut terminal = false;
+        let mut used_after_restore = false;
+        for (_, instr) in source.iter().skip(restore + 1) {
+            if matches!(instr, IRT0Inst::Ret(_)) {
+                terminal = true;
+                break;
+            }
+            if matches!(instr, IRT0Inst::If(..) | IRT0Inst::Jmp(_))
+                || instruction_reads_register(instr, register.full_register())
+            {
+                used_after_restore = true;
+                break;
+            }
+        }
+        if saved == &offset
+            && loaded == &offset
+            && register == restored
+            && save < restore
+            && nonvolatile
+            && terminal
+            && !used_after_restore
+        {
+            remove.insert(*save);
+            remove.insert(*restore);
+        }
+    }
+    source
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| (!remove.contains(&index)).then_some(item.clone()))
+        .collect()
+}
+
 struct SyntheticFunctionBuilder<'a> {
     source: &'a [(usize, IRT0Inst)],
+    entry_address: usize,
     jump_entries: HashSet<usize>,
     by_start: HashMap<usize, SyntheticFunctionId>,
     functions: Vec<SyntheticFunction>,
@@ -150,7 +300,11 @@ impl SyntheticFunctionBuilder<'_> {
         };
         self.by_start.insert(start, reference);
         self.functions.push(SyntheticFunction {
-            entry_offset: self.source[start].0,
+            entry_offset: if start == 0 {
+                self.entry_address
+            } else {
+                self.source[start].0
+            },
             parameters: Vec::new(),
             external_flags: HashSet::new(),
             body: Vec::new(),
@@ -175,10 +329,37 @@ impl SyntheticFunctionBuilder<'_> {
 
             match instr {
                 IRT0Inst::If(condition, inner) => {
-                    let IRT0Inst::Jmp(target) = inner.as_ref() else {
-                        panic!("tier 1 expects a jump inside a tier 0 conditional");
+                    let then_branch = match inner.as_ref() {
+                        IRT0Inst::Jmp(target) => self.target(target, offset),
+                        IRT0Inst::Asgn { dest, src } => {
+                            // A conditional move is a local assignment followed by
+                            // the same continuation as the unchanged arm.
+                            let continuation = self.fallthrough(index + 1);
+                            let id = SyntheticFunctionId {
+                                id: self.functions.len(),
+                            };
+                            self.functions.push(SyntheticFunction {
+                                entry_offset: offset,
+                                parameters: Vec::new(),
+                                external_flags: HashSet::new(),
+                                body: vec![
+                                    (
+                                        offset,
+                                        IRInst::Assign {
+                                            dest: lift_expr(dest.clone()),
+                                            src: lift_expr(src.clone()),
+                                        },
+                                    ),
+                                    (offset, continuation),
+                                ],
+                            });
+                            IRInst::CallSynthetic {
+                                function: id,
+                                arguments: Vec::new(),
+                            }
+                        }
+                        _ => panic!("unsupported conditional tier 0 instruction"),
                     };
-                    let then_branch = self.target(target, offset);
                     let else_branch = self.fallthrough(index + 1);
                     body.push((
                         offset,
@@ -248,6 +429,7 @@ fn condition_flags(expr: &IRExpr, flags: &mut Vec<NativeFlag>) {
         | IRExpr::ZeroExtend { value: inner, .. }
         | IRExpr::SignExtend { value: inner, .. }
         | IRExpr::Not(inner) => condition_flags(inner, flags),
+        IRExpr::Stack { .. } => {}
         _ => {}
     }
 }
@@ -467,22 +649,25 @@ fn lift_conditions(
 }
 
 pub fn lift(source: &IRT0Program) -> Program {
-    if source.instructions.is_empty() {
+    let instructions = strip_frame_saves(&source.instructions);
+    if instructions.is_empty() {
         return Program {
             entry_address: source.entry_address,
             entry: None,
+            stack_widths: HashMap::new(),
             functions: Vec::new(),
         };
     }
 
     let mut builder = SyntheticFunctionBuilder {
-        source: &source.instructions,
+        source: &instructions,
+        entry_address: source.entry_address,
         jump_entries: HashSet::new(),
         by_start: HashMap::new(),
         functions: Vec::new(),
     };
 
-    for (offset, instr) in &source.instructions {
+    for (offset, instr) in &instructions {
         let target = match instr {
             IRT0Inst::Jmp(target) => Some(target),
             IRT0Inst::If(_, inner) => match inner.as_ref() {
@@ -504,6 +689,7 @@ pub fn lift(source: &IRT0Program) -> Program {
     let mut program = prune_flags::tr(Program {
         entry_address: source.entry_address,
         entry: Some(entry),
+        stack_widths: HashMap::new(),
         functions: builder.functions,
     });
     return_registers::run(&mut program);

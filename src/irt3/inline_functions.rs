@@ -76,7 +76,7 @@ impl Slots {
         &mut self,
         body: Vec<(usize, IRInst)>,
         natives: &HashMap<usize, VariableId>,
-        parameters: &[Vec<(VariableId, iced_x86::Register)>],
+        parameters: &[Vec<(VariableId, usize)>],
     ) -> Vec<(usize, IRInst)> {
         let mut result = Vec::new();
         for (offset, mut instr) in body {
@@ -128,13 +128,13 @@ impl Slots {
                 } => {
                     assert_eq!(arguments.len(), parameters[function.id].len());
                     let mut assignments = Vec::new();
-                    for (mut value, &(variable, register)) in std::mem::take(arguments)
+                    for (mut value, &(variable, size)) in std::mem::take(arguments)
                         .into_iter()
                         .zip(&parameters[function.id])
                     {
                         self.expression(&mut value, natives);
                         if !matches!(value, IRExpr::Variable(found) if found == variable) {
-                            assignments.push((variable, register, value));
+                            assignments.push((variable, size, value));
                         }
                     }
                     let destinations: HashSet<_> =
@@ -149,9 +149,8 @@ impl Slots {
                     // Evaluate every RHS before changing parameter slots. In
                     // particular, f(b, a) must not become a = b; b = a.
                     if needs_staging {
-                        for (_, register, value) in &mut assignments {
-                            let temporary =
-                                self.fresh(offset, VariableType::Unknown(Some(register.size())));
+                        for (_, size, value) in &mut assignments {
+                            let temporary = self.fresh(offset, VariableType::Unknown(Some(*size)));
                             result.push((
                                 offset,
                                 IRInst::AssignVariable {
@@ -480,14 +479,22 @@ pub fn tr(mut program: Program) -> Program {
         let mut bindings = Vec::new();
         let mut natives = HashMap::new();
         for parameter in &function.parameters {
-            let (variable, register) = match parameter {
+            let (variable, size) = match parameter {
                 Parameter::Slot { variable, register } => (
                     slots.local(
                         *variable,
                         function.entry_offset,
                         VariableType::Register(*register),
                     ),
-                    *register,
+                    register.size(),
+                ),
+                Parameter::Value { variable, size } => (
+                    slots.local(
+                        *variable,
+                        function.entry_offset,
+                        VariableType::Unknown(Some(*size)),
+                    ),
+                    *size,
                 ),
                 Parameter::Native { ordinal, register } => {
                     let variable =
@@ -502,10 +509,25 @@ pub fn tr(mut program: Program) -> Program {
                             },
                         ));
                     }
-                    (variable, *register)
+                    (variable, register.size())
+                }
+                Parameter::Input { ordinal, size } => {
+                    let variable =
+                        slots.fresh(function.entry_offset, VariableType::Unknown(Some(*size)));
+                    natives.insert(*ordinal, variable);
+                    if id == entry.id {
+                        initializers.push((
+                            entry_offset,
+                            IRInst::AssignVariable {
+                                variable,
+                                value: IRExpr::Argument(*ordinal),
+                            },
+                        ));
+                    }
+                    (variable, *size)
                 }
             };
-            bindings.push((variable, register));
+            bindings.push((variable, size));
         }
         for (offset, instr) in &function.body {
             slots.collect(*offset, instr);
@@ -515,7 +537,7 @@ pub fn tr(mut program: Program) -> Program {
     }
     let mut signature_slots = HashSet::new();
     for parameter in &mut signature {
-        if let Parameter::Slot { variable, .. } = parameter {
+        if let Parameter::Slot { variable, .. } | Parameter::Value { variable, .. } = parameter {
             *variable = slots.variables[variable];
             signature_slots.insert(*variable);
         }

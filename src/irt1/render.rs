@@ -104,6 +104,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
             format!("signExtend<{size}>({})", expression(value, 0))
         }
         IRExpr::Reg(reg) => format!("{reg:?}"),
+        IRExpr::Stack { offset, size } => format!("stack[{offset:+}]<{size}>"),
         IRExpr::Flag(flag) => format!("flags.{flag:?}"),
         IRExpr::CU8(value) => format!("0x{value:x}"),
         IRExpr::CU32(value) => format!("0x{value:x}"),
@@ -216,7 +217,7 @@ pub fn render(program: &Program, address_comments: bool) -> String {
         let parameters = function
             .parameters
             .iter()
-            .map(|register| format!("{register:?}"))
+            .map(|parameter| format!("{parameter:?}"))
             .collect::<Vec<_>>()
             .join(", ");
         write!(output, "\nfunction {}({parameters}) {{", names[index]).unwrap();
