@@ -202,6 +202,37 @@ impl Analysis {
         }
     }
 
+    // Carry an integer-only operation's operand context through computed
+    // arithmetic.
+    fn integer_expression(&mut self, expr: &IRExpr, owner: SyntheticFunctionId, unsigned: bool) {
+        if let Some(slot) = direct_slot(expr, owner) {
+            self.integer(slot, unsigned);
+            return;
+        }
+        match expr {
+            IRExpr::BinOp {
+                kind:
+                    IRBinOpKind::Add
+                    | IRBinOpKind::Sub
+                    | IRBinOpKind::Mul
+                    | IRBinOpKind::Shl
+                    | IRBinOpKind::Shr
+                    | IRBinOpKind::BitOr
+                    | IRBinOpKind::And
+                    | IRBinOpKind::Or,
+                lhs,
+                rhs,
+            } => {
+                self.integer_expression(lhs, owner, unsigned);
+                self.integer_expression(rhs, owner, unsigned);
+            }
+            IRExpr::Convert { value, source, .. } => {
+                self.integer_expression(value, owner, !source.signed);
+            }
+            _ => {}
+        }
+    }
+
     fn copy(&mut self, dest: Slot, src: Slot) {
         if self.width(dest).is_some() && self.width(dest) == self.width(src) {
             self.copies.push((dest, src));
@@ -593,9 +624,7 @@ impl Analysis {
                         let unsigned =
                             matches!(kind, IRBinOpKind::UnsignedLt | IRBinOpKind::UnsignedGe);
                         for operand in [lhs.as_ref(), rhs.as_ref()] {
-                            if let Some(slot) = direct_slot(operand, owner) {
-                                self.integer(slot, unsigned);
-                            }
+                            self.integer_expression(operand, owner, unsigned);
                         }
                     }
                     IRBinOpKind::Eq | IRBinOpKind::Ne => {

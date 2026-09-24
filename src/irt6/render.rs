@@ -330,7 +330,7 @@ fn binary_operator(kind: &IRBinOpKind) -> &'static str {
 }
 
 fn integer_literal(value: u64) -> String {
-    if value > 1 && value.is_power_of_two() {
+    if value > 15 && value.is_power_of_two() {
         format!("0x{value:x}")
     } else {
         value.to_string()
