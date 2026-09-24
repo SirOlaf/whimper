@@ -1,3 +1,4 @@
+mod coalesce_loop_copies;
 mod eliminate_aliases;
 mod fold_constants;
 mod inline_loop_conditions;
@@ -10,6 +11,7 @@ mod simplify_branches;
 mod variable_flow;
 
 use crate::irt3::ir as t3;
+use std::collections::HashSet;
 
 use self::ir::{
     DataId, DataVariable, IRBinOpKind, IRExpr, IRInst, LoopCondition, LoopId, Parameter, Program,
@@ -215,15 +217,137 @@ fn contains_loop(instr: &t3::IRInst) -> bool {
     }
 }
 
-fn lift_branch(body: &[t3::IRInst]) -> Vec<IRInst> {
+fn read_variables(expr: &t3::IRExpr, reads: &mut HashSet<t3::VariableId>) {
+    match expr {
+        t3::IRExpr::Variable(variable) => {
+            reads.insert(*variable);
+        }
+        t3::IRExpr::BinOp { lhs, rhs, .. } => {
+            read_variables(lhs, reads);
+            read_variables(rhs, reads);
+        }
+        t3::IRExpr::Deref(inner)
+        | t3::IRExpr::CastUnknownPtr { address: inner, .. }
+        | t3::IRExpr::Convert { value: inner, .. }
+        | t3::IRExpr::Not(inner) => read_variables(inner, reads),
+        _ => {}
+    }
+}
+
+fn instruction_reads(instr: &t3::IRInst, skip: &t3::IRInst, reads: &mut HashSet<t3::VariableId>) {
+    if std::ptr::eq(instr, skip) {
+        return;
+    }
+    match instr {
+        t3::IRInst::Assign { dest, src } => {
+            read_variables(src, reads);
+            if !matches!(dest, t3::IRExpr::Variable(_)) {
+                read_variables(dest, reads);
+            }
+        }
+        t3::IRInst::AssignVariable { value, .. } => read_variables(value, reads),
+        t3::IRInst::LoadVariable { address, .. } => read_variables(address, reads),
+        t3::IRInst::StoreVariable { address, variable } => {
+            read_variables(address, reads);
+            reads.insert(*variable);
+        }
+        t3::IRInst::Return(Some(value)) | t3::IRInst::Jump(value) => read_variables(value, reads),
+        t3::IRInst::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            read_variables(condition, reads);
+            for instr in then_branch.iter().chain(else_branch) {
+                instruction_reads(instr, skip, reads);
+            }
+        }
+        t3::IRInst::Loop { body, .. } => {
+            for (_, instr) in body {
+                instruction_reads(instr, skip, reads);
+            }
+        }
+        t3::IRInst::CallSynthetic { arguments, .. } => {
+            for argument in arguments {
+                read_variables(argument, reads);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pure_expression(expr: &t3::IRExpr) -> bool {
+    match expr {
+        t3::IRExpr::Deref(_) | t3::IRExpr::Data(_) => false,
+        t3::IRExpr::BinOp { lhs, rhs, .. } => pure_expression(lhs) && pure_expression(rhs),
+        t3::IRExpr::CastUnknownPtr { address, .. }
+        | t3::IRExpr::Convert { value: address, .. }
+        | t3::IRExpr::Not(address) => pure_expression(address),
+        _ => true,
+    }
+}
+
+/// Repeat-edge assignments may also run on the final iteration when their
+/// effects cannot escape the loop or change the trailing check.
+fn movable_repeat_updates(
+    function: &t3::SyntheticFunction,
+    loop_instr: &t3::IRInst,
+    condition: &IRExpr,
+    updates: &[t3::IRInst],
+) -> bool {
+    let mut guard_reads = HashSet::new();
+    fn ir_reads(expr: &IRExpr, reads: &mut HashSet<VariableId>) {
+        match expr {
+            IRExpr::Variable(variable) => {
+                reads.insert(*variable);
+            }
+            IRExpr::BinOp { lhs, rhs, .. } => {
+                ir_reads(lhs, reads);
+                ir_reads(rhs, reads);
+            }
+            IRExpr::Deref(inner)
+            | IRExpr::CastUnknownPtr { address: inner, .. }
+            | IRExpr::Convert { value: inner, .. }
+            | IRExpr::Not(inner) => ir_reads(inner, reads),
+            _ => {}
+        }
+    }
+    ir_reads(condition, &mut guard_reads);
+    let mut outside_reads = HashSet::new();
+    for (_, instr) in &function.body {
+        instruction_reads(instr, loop_instr, &mut outside_reads);
+    }
+    updates.iter().all(|instr| {
+        let (variable, value) = match instr {
+            t3::IRInst::AssignVariable { variable, value } => (variable, value),
+            t3::IRInst::Assign {
+                dest: t3::IRExpr::Variable(variable),
+                src,
+            } => (variable, src),
+            _ => return false,
+        };
+        !guard_reads.contains(&variable_id(*variable))
+            && !outside_reads.contains(variable)
+            && pure_expression(value)
+    })
+}
+
+fn lift_branch(body: &[t3::IRInst], function: &t3::SyntheticFunction) -> Vec<IRInst> {
     body.iter()
-        .flat_map(|instr| instructions(0, instr).into_iter().map(|(_, instr)| instr))
+        .flat_map(|instr| {
+            instructions(0, instr, function)
+                .into_iter()
+                .map(|(_, instr)| instr)
+        })
         .collect()
 }
 
-fn lift_body(body: &[(usize, t3::IRInst)]) -> Vec<(usize, IRInst)> {
+fn lift_body(
+    body: &[(usize, t3::IRInst)],
+    function: &t3::SyntheticFunction,
+) -> Vec<(usize, IRInst)> {
     body.iter()
-        .flat_map(|(offset, instr)| instructions(*offset, instr))
+        .flat_map(|(offset, instr)| instructions(*offset, instr, function))
         .collect()
 }
 
@@ -231,6 +355,8 @@ fn loop_instructions(
     label: Option<t3::LoopId>,
     entry_offset: usize,
     body: &[(usize, t3::IRInst)],
+    function: &t3::SyntheticFunction,
+    loop_instr: &t3::IRInst,
 ) -> Vec<(usize, IRInst)> {
     let single_exit = body
         .iter()
@@ -257,9 +383,9 @@ fn loop_instructions(
         if index == 0 {
             let mut loop_body = updates
                 .iter()
-                .flat_map(|instr| instructions(offset, instr))
+                .flat_map(|instr| instructions(offset, instr, function))
                 .collect::<Vec<_>>();
-            loop_body.extend(lift_body(&body[1..]));
+            loop_body.extend(lift_body(&body[1..], function));
             return vec![(
                 entry_offset,
                 IRInst::While {
@@ -272,14 +398,28 @@ fn loop_instructions(
         }
 
         if !continues {
-            if index == body.len() - 1 && updates.is_empty() {
+            let prefix = &body[..index];
+            let rotatable = !prefix
+                .iter()
+                .any(|(_, instr)| declares_variable(instr) || contains_loop(instr));
+            if index == body.len() - 1
+                && (updates.is_empty()
+                    || (!rotatable
+                        && movable_repeat_updates(function, loop_instr, &expression, updates)))
+            {
+                let mut loop_body = lift_body(&body[..index], function);
+                loop_body.extend(
+                    lift_branch(updates, function)
+                        .into_iter()
+                        .map(|instr| (offset, instr)),
+                );
                 return vec![(
                     entry_offset,
                     IRInst::While {
                         label: label.map(loop_id),
                         entry_offset,
                         condition: LoopCondition::After { offset, expression },
-                        body: lift_body(&body[..index]),
+                        body: loop_body,
                     },
                 )];
             }
@@ -290,18 +430,14 @@ fn loop_instructions(
             // source loop appear as two loops in the rendered function.
             // Declarations stay in place because duplicating their scope
             // changes bindings.
-            let prefix = &body[..index];
-            if !prefix
-                .iter()
-                .any(|(_, instr)| declares_variable(instr) || contains_loop(instr))
-            {
-                let mut result = lift_body(prefix);
+            if rotatable {
+                let mut result = lift_body(prefix, function);
                 let mut loop_body = updates
                     .iter()
-                    .flat_map(|instr| instructions(offset, instr))
+                    .flat_map(|instr| instructions(offset, instr, function))
                     .collect::<Vec<_>>();
-                loop_body.extend(lift_body(&body[index + 1..]));
-                loop_body.extend(lift_body(prefix));
+                loop_body.extend(lift_body(&body[index + 1..], function));
+                loop_body.extend(lift_body(prefix, function));
                 result.push((
                     offset,
                     IRInst::While {
@@ -325,23 +461,27 @@ fn loop_instructions(
                 offset: entry_offset,
                 expression: IRExpr::Bool(true),
             },
-            body: lift_body(body),
+            body: lift_body(body, function),
         },
     )]
 }
 
-fn instructions(offset: usize, instr: &t3::IRInst) -> Vec<(usize, IRInst)> {
+fn instructions(
+    offset: usize,
+    instr: &t3::IRInst,
+    function: &t3::SyntheticFunction,
+) -> Vec<(usize, IRInst)> {
     match instr {
         t3::IRInst::Loop {
             label,
             entry_offset,
             body,
-        } => loop_instructions(*label, *entry_offset, body),
-        _ => vec![(offset, instruction(instr))],
+        } => loop_instructions(*label, *entry_offset, body, function, instr),
+        _ => vec![(offset, instruction(instr, function))],
     }
 }
 
-fn instruction(instr: &t3::IRInst) -> IRInst {
+fn instruction(instr: &t3::IRInst, function: &t3::SyntheticFunction) -> IRInst {
     match instr {
         t3::IRInst::Assign { dest, src } => IRInst::Assign {
             dest: expression(dest),
@@ -370,8 +510,8 @@ fn instruction(instr: &t3::IRInst) -> IRInst {
             else_branch,
         } => IRInst::If {
             condition: expression(condition),
-            then_branch: lift_branch(then_branch),
-            else_branch: lift_branch(else_branch),
+            then_branch: lift_branch(then_branch, function),
+            else_branch: lift_branch(else_branch, function),
         },
         t3::IRInst::Loop { .. } => unreachable!("loops are lifted by instructions"),
         t3::IRInst::Break => IRInst::Break,
@@ -412,7 +552,7 @@ pub fn lift(source: &t3::Program) -> Program {
                 body: function
                     .body
                     .iter()
-                    .flat_map(|(offset, instr)| instructions(*offset, instr))
+                    .flat_map(|(offset, instr)| instructions(*offset, instr, function))
                     .collect(),
             })
             .collect(),
@@ -422,6 +562,8 @@ pub fn lift(source: &t3::Program) -> Program {
         function.body = collapse_constant_branches(std::mem::take(&mut function.body));
     }
     fold_constants::run(&mut program);
+    eliminate_aliases::run(&mut program);
+    coalesce_loop_copies::run(&mut program);
     eliminate_aliases::run(&mut program);
     inline_loop_conditions::run(&mut program);
     simplify_binary_operations::run(&mut program);
