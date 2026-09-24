@@ -2,6 +2,7 @@ mod eliminate_aliases;
 mod fold_constants;
 mod inline_loop_conditions;
 pub mod ir;
+mod lift_return_branches;
 mod place_declarations;
 pub mod render;
 mod simplify_binary_operations;
@@ -407,6 +408,7 @@ pub fn lift(source: &t3::Program) -> Program {
     inline_loop_conditions::run(&mut program);
     simplify_binary_operations::run(&mut program);
     simplify_branches::run(&mut program);
+    lift_return_branches::run(&mut program);
     place_declarations::run(&mut program);
     remove_unused_declarations(&mut program);
     prune_unused_entry_arguments(&mut program);
