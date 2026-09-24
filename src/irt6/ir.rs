@@ -11,6 +11,8 @@ pub struct Program {
 pub struct SyntheticFunction {
     pub entry_offset: usize,
     pub parameters: Vec<Parameter>,
+    /// Present when return paths establish a compatible known value type.
+    pub return_type: Option<VariableType>,
     pub body: Vec<(usize, IRInst)>,
 }
 

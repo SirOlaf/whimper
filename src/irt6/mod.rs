@@ -3,6 +3,7 @@
 pub mod arithmetic;
 mod effects;
 mod eliminate_variables;
+mod infer_returns;
 mod infer_types;
 pub mod ir;
 mod relocate_variables;
@@ -231,6 +232,7 @@ pub fn lift(source: &t5::Program) -> Program {
             .map(|function| SyntheticFunction {
                 entry_offset: function.entry_offset,
                 parameters: function.parameters.iter().map(parameter).collect(),
+                return_type: None,
                 body: function
                     .body
                     .iter()

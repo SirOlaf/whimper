@@ -385,6 +385,7 @@ fn instruction(
     instr: &IRInst,
     indent: usize,
     types: &RenderTypes,
+    returns_value: bool,
     address_comments: bool,
 ) {
     let padding = "    ".repeat(indent);
@@ -481,12 +482,26 @@ fn instruction(
             )
             .unwrap();
             for instr in then_branch {
-                instruction(output, instr, indent + 1, types, address_comments);
+                instruction(
+                    output,
+                    instr,
+                    indent + 1,
+                    types,
+                    returns_value,
+                    address_comments,
+                );
             }
             if !else_branch.is_empty() {
                 writeln!(output, "{padding}}} else {{").unwrap();
                 for instr in else_branch {
-                    instruction(output, instr, indent + 1, types, address_comments);
+                    instruction(
+                        output,
+                        instr,
+                        indent + 1,
+                        types,
+                        returns_value,
+                        address_comments,
+                    );
                 }
             }
             writeln!(output, "{padding}}}").unwrap();
@@ -524,7 +539,14 @@ fn instruction(
                     writeln!(output, "{nested_padding}// 0x{offset:x}").unwrap();
                     previous_offset = Some(*offset);
                 }
-                instruction(output, instr, indent + 1, types, address_comments);
+                instruction(
+                    output,
+                    instr,
+                    indent + 1,
+                    types,
+                    returns_value,
+                    address_comments,
+                );
             }
             match condition {
                 LoopCondition::Before { .. } => writeln!(output, "{padding}}}").unwrap(),
@@ -578,7 +600,14 @@ fn instruction(
                     writeln!(output, "{nested_padding}// 0x{offset:x}").unwrap();
                     previous_offset = Some(*offset);
                 }
-                instruction(output, instr, indent + 1, types, address_comments);
+                instruction(
+                    output,
+                    instr,
+                    indent + 1,
+                    types,
+                    returns_value,
+                    address_comments,
+                );
             }
             writeln!(output, "{padding}}}").unwrap();
         }
@@ -600,12 +629,22 @@ fn instruction(
                 .map(|argument| expression(argument, 0, types))
                 .collect::<Vec<_>>()
                 .join(", ");
-            writeln!(
-                output,
-                "{padding}return {}({arguments});",
-                function_name(*function)
-            )
-            .unwrap();
+            if returns_value {
+                writeln!(
+                    output,
+                    "{padding}return {}({arguments});",
+                    function_name(*function)
+                )
+                .unwrap();
+            } else {
+                writeln!(
+                    output,
+                    "{padding}{}({arguments});",
+                    function_name(*function)
+                )
+                .unwrap();
+                writeln!(output, "{padding}return;").unwrap();
+            }
         }
         IRInst::Jump(target) => {
             writeln!(output, "{padding}jump({});", expression(target, 0, types)).unwrap();
@@ -644,7 +683,11 @@ pub fn render(program: &Program, address_comments: bool) -> String {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        write!(output, "\nfunction {}({parameters}) {{", function_name(id)).unwrap();
+        write!(output, "\nfunction {}({parameters})", function_name(id)).unwrap();
+        if let Some(ty) = &function.return_type {
+            write!(output, " -> {}", type_name(ty.clone(), &program.structs)).unwrap();
+        }
+        write!(output, " {{").unwrap();
         if address_comments {
             write!(output, " // 0x{:x}", function.entry_offset).unwrap();
         }
@@ -655,7 +698,14 @@ pub fn render(program: &Program, address_comments: bool) -> String {
                 writeln!(output, "    // 0x{offset:x}").unwrap();
                 previous_offset = Some(*offset);
             }
-            instruction(&mut output, instr, 1, &types, address_comments);
+            instruction(
+                &mut output,
+                instr,
+                1,
+                &types,
+                function.return_type.is_some(),
+                address_comments,
+            );
         }
         writeln!(output, "}}").unwrap();
     }

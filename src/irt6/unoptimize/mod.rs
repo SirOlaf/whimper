@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use super::{
     arithmetic::Context,
-    eliminate_variables, infer_types,
+    eliminate_variables, infer_returns, infer_types,
     ir::Program,
     relocate_variables,
     shapes::{self, LoopAnalysis},
@@ -129,6 +129,7 @@ pub fn run_with_options(program: &mut Program, options: Options) -> Report {
     // Type promotion exposes CString length checks. Re-scope locals after
     // those rewrites, then collapse copies made adjacent by the move.
     relocate_variables::run(program);
+    infer_returns::run(program);
     eliminate_variables::run(program);
     report.remaining = shapes::collect_loop_analyses(program);
     report
