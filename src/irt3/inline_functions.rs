@@ -526,6 +526,7 @@ pub fn tr(mut program: Program) -> Program {
             &parameters,
         );
     }
+    let entry_address = program.entry_address;
     let mut cfg = Cfg::build(program);
     cfg.eliminate_branches();
     let mut inliner = Inliner {
@@ -546,6 +547,7 @@ pub fn tr(mut program: Program) -> Program {
     slots.declarations.append(&mut initializers);
     slots.declarations.append(&mut body);
     Program {
+        entry_address,
         entry: Some(SyntheticFunctionId { id: 0 }),
         functions: vec![SyntheticFunction {
             entry_offset,

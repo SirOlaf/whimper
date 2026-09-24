@@ -210,6 +210,7 @@ fn instruction(instr: &t5::IRInst) -> IRInst {
 
 pub fn lift(source: &t5::Program) -> Program {
     Program {
+        entry_address: source.entry_address,
         entry: source.entry.map(function_id),
         structs: source
             .structs

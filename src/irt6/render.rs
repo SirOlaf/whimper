@@ -4,7 +4,7 @@ use std::{collections::HashMap, fmt::Write};
 
 use super::ir::{
     IRBinOpKind, IRExpr, IRInst, LoopCondition, Parameter, Program, StructDefinition,
-    SyntheticFunction, SyntheticFunctionId, VariableId, VariableType, field_address,
+    SyntheticFunction, VariableId, VariableType, field_address,
 };
 
 struct RenderTypes<'a> {
@@ -185,8 +185,16 @@ impl<'a> RenderTypes<'a> {
     }
 }
 
-fn function_name(id: SyntheticFunctionId) -> String {
-    format!("fn_{}", id.id)
+fn function_names(entry_address: usize, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|id| {
+            if count == 1 {
+                format!("fn_{entry_address:x}")
+            } else {
+                format!("fn_{entry_address:x}_{id}")
+            }
+        })
+        .collect()
 }
 
 fn variable_name(id: VariableId) -> String {
@@ -387,6 +395,7 @@ fn instruction(
     types: &RenderTypes,
     returns_value: bool,
     address_comments: bool,
+    names: &[String],
 ) {
     let padding = "    ".repeat(indent);
     match instr {
@@ -489,6 +498,7 @@ fn instruction(
                     types,
                     returns_value,
                     address_comments,
+                    names,
                 );
             }
             if !else_branch.is_empty() {
@@ -501,6 +511,7 @@ fn instruction(
                         types,
                         returns_value,
                         address_comments,
+                        names,
                     );
                 }
             }
@@ -546,6 +557,7 @@ fn instruction(
                     types,
                     returns_value,
                     address_comments,
+                    names,
                 );
             }
             match condition {
@@ -607,6 +619,7 @@ fn instruction(
                     types,
                     returns_value,
                     address_comments,
+                    names,
                 );
             }
             writeln!(output, "{padding}}}").unwrap();
@@ -633,16 +646,11 @@ fn instruction(
                 writeln!(
                     output,
                     "{padding}return {}({arguments});",
-                    function_name(*function)
+                    names[function.id]
                 )
                 .unwrap();
             } else {
-                writeln!(
-                    output,
-                    "{padding}{}({arguments});",
-                    function_name(*function)
-                )
-                .unwrap();
+                writeln!(output, "{padding}{}({arguments});", names[function.id]).unwrap();
                 writeln!(output, "{padding}return;").unwrap();
             }
         }
@@ -658,14 +666,14 @@ fn instruction(
 /// Render the complete tier 6 program, optionally including source address comments.
 pub fn render(program: &Program, address_comments: bool) -> String {
     let mut output = String::new();
+    let names = function_names(program.entry_address, program.functions.len());
     match program.entry {
-        Some(entry) => writeln!(output, "// entry: {}", function_name(entry)).unwrap(),
+        Some(entry) => writeln!(output, "// entry: {}", names[entry.id]).unwrap(),
         None => writeln!(output, "// entry: none").unwrap(),
     }
 
     for (index, function) in program.functions.iter().enumerate() {
         let types = RenderTypes::from_function(function, &program.structs);
-        let id = SyntheticFunctionId { id: index };
         let parameters = function
             .parameters
             .iter()
@@ -683,7 +691,7 @@ pub fn render(program: &Program, address_comments: bool) -> String {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        write!(output, "\nfunction {}({parameters})", function_name(id)).unwrap();
+        write!(output, "\nfunction {}({parameters})", names[index]).unwrap();
         if let Some(ty) = &function.return_type {
             write!(output, " -> {}", type_name(ty.clone(), &program.structs)).unwrap();
         }
@@ -705,6 +713,7 @@ pub fn render(program: &Program, address_comments: bool) -> String {
                 &types,
                 function.return_type.is_some(),
                 address_comments,
+                &names,
             );
         }
         writeln!(output, "}}").unwrap();

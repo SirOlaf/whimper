@@ -388,6 +388,7 @@ fn lift_function(id: usize, source: &t1::SyntheticFunction, entry: bool) -> Synt
 
 pub fn lift(source: &t1::Program) -> Program {
     let mut program = Program {
+        entry_address: source.entry_address,
         entry: source
             .entry
             .map(|entry| SyntheticFunctionId { id: entry.id }),

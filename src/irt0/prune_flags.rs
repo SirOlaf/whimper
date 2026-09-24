@@ -43,10 +43,10 @@ fn read_inst(instr: &IRInst, used: &mut HashSet<NativeFlag>) {
 
 pub fn tr(mut program: Program) -> Program {
     let mut used = HashSet::new();
-    for (_, instr) in &program {
+    for (_, instr) in &program.instructions {
         read_inst(instr, &mut used);
     }
-    program.retain_mut(|(_, instr)| match instr {
+    program.instructions.retain_mut(|(_, instr)| match instr {
         IRInst::SetFlagsFrom(flags, _)
         | IRInst::ClearFlags(flags)
         | IRInst::InvalidateFlags(flags) => {

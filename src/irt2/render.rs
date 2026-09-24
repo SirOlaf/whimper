@@ -2,12 +2,12 @@
 
 use std::fmt::Write;
 
-use super::ir::{
-    IRBinOpKind, IRExpr, IRInst, Parameter, Program, SyntheticFunctionId, VariableId, VariableType,
-};
+use super::ir::{IRBinOpKind, IRExpr, IRInst, Parameter, Program, VariableId, VariableType};
 
-fn function_name(id: SyntheticFunctionId) -> String {
-    format!("fn_{}", id.id)
+fn function_names(entry_address: usize, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|id| format!("fn_{entry_address:x}_{id}"))
+        .collect()
 }
 
 fn variable_name(id: VariableId) -> String {
@@ -109,7 +109,7 @@ fn expression(expr: &IRExpr, parent_precedence: u8) -> String {
     }
 }
 
-fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
+fn instruction(output: &mut String, instr: &IRInst, indent: usize, names: &[String]) {
     let padding = "    ".repeat(indent);
     match instr {
         IRInst::Assign { dest, src } => {
@@ -170,11 +170,11 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
         } => {
             writeln!(output, "{padding}if ({}) {{", expression(condition, 0)).unwrap();
             for instr in then_branch {
-                instruction(output, instr, indent + 1);
+                instruction(output, instr, indent + 1, names);
             }
             writeln!(output, "{padding}}} else {{").unwrap();
             for instr in else_branch {
-                instruction(output, instr, indent + 1);
+                instruction(output, instr, indent + 1, names);
             }
             writeln!(output, "{padding}}}").unwrap();
         }
@@ -190,7 +190,7 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
             writeln!(
                 output,
                 "{padding}return {}({arguments});",
-                function_name(*function)
+                names[function.id]
             )
             .unwrap();
         }
@@ -206,13 +206,13 @@ fn instruction(output: &mut String, instr: &IRInst, indent: usize) {
 /// Render the complete tier 2 program, optionally including source address comments.
 pub fn render(program: &Program, address_comments: bool) -> String {
     let mut output = String::new();
+    let names = function_names(program.entry_address, program.functions.len());
     match program.entry {
-        Some(entry) => writeln!(output, "// entry: {}", function_name(entry)).unwrap(),
+        Some(entry) => writeln!(output, "// entry: {}", names[entry.id]).unwrap(),
         None => writeln!(output, "// entry: none").unwrap(),
     }
 
     for (index, function) in program.functions.iter().enumerate() {
-        let id = SyntheticFunctionId { id: index };
         let parameters = function
             .parameters
             .iter()
@@ -226,7 +226,7 @@ pub fn render(program: &Program, address_comments: bool) -> String {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        write!(output, "\nfunction {}({parameters}) {{", function_name(id)).unwrap();
+        write!(output, "\nfunction {}({parameters}) {{", names[index]).unwrap();
         if address_comments {
             write!(output, " // 0x{:x}", function.entry_offset).unwrap();
         }
@@ -237,7 +237,7 @@ pub fn render(program: &Program, address_comments: bool) -> String {
                 writeln!(output, "    // 0x{offset:x}").unwrap();
                 previous_offset = Some(*offset);
             }
-            instruction(&mut output, instr, 1);
+            instruction(&mut output, instr, 1, &names);
         }
         writeln!(output, "}}").unwrap();
     }

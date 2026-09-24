@@ -2,7 +2,11 @@ use std::collections::HashSet;
 
 use iced_x86::{Code, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
 
-pub type Program = Vec<(usize, IRInst)>;
+#[derive(Debug, Clone)]
+pub struct Program {
+    pub entry_address: usize,
+    pub instructions: Vec<(usize, IRInst)>,
+}
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum NativeFlag {
@@ -545,7 +549,10 @@ pub fn lift_to_irt0(code: &[u8], base_offset: usize) -> Program {
 
     let mut instruction = Instruction::default();
 
-    let mut res: Program = vec![];
+    let mut program = Program {
+        entry_address: base_offset,
+        instructions: Vec::new(),
+    };
     let mut last_compare = None;
     while decoder.can_decode() {
         decoder.decode_out(&mut instruction);
@@ -579,7 +586,7 @@ pub fn lift_to_irt0(code: &[u8], base_offset: usize) -> Program {
             }
         };
         if let Some(instrs) = tmp_instr {
-            res.extend(
+            program.instructions.extend(
                 instrs
                     .iter()
                     .map(|x| (instruction.ip().try_into().unwrap(), x.clone())),
@@ -590,5 +597,5 @@ pub fn lift_to_irt0(code: &[u8], base_offset: usize) -> Program {
             .then(|| (lift_op(instruction, 0), lift_op(instruction, 1)));
     }
 
-    res
+    program
 }

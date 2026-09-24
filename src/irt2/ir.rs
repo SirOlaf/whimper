@@ -2,6 +2,7 @@ use iced_x86::Register;
 
 #[derive(Debug, Clone)]
 pub struct Program {
+    pub entry_address: usize,
     pub entry: Option<SyntheticFunctionId>,
     pub functions: Vec<SyntheticFunction>,
 }

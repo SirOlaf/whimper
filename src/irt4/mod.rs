@@ -363,6 +363,7 @@ fn instruction(instr: &t3::IRInst) -> IRInst {
 
 pub fn lift(source: &t3::Program) -> Program {
     let mut program = Program {
+        entry_address: source.entry_address,
         entry: source.entry.map(function_id),
         functions: source
             .functions

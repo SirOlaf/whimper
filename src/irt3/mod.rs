@@ -144,6 +144,7 @@ fn instruction(instr: &t2::IRInst) -> IRInst {
 
 pub fn lift(source: &t2::Program) -> Program {
     let program = Program {
+        entry_address: source.entry_address,
         entry: source.entry.map(function_id),
         functions: source
             .functions

@@ -92,7 +92,7 @@ fn jump_target(expr: &IRT0Expr, offset: usize) -> Option<usize> {
 }
 
 struct SyntheticFunctionBuilder<'a> {
-    source: &'a IRT0Program,
+    source: &'a [(usize, IRT0Inst)],
     jump_entries: HashSet<usize>,
     by_start: HashMap<usize, SyntheticFunctionId>,
     functions: Vec<SyntheticFunction>,
@@ -466,21 +466,22 @@ fn lift_conditions(
 }
 
 pub fn lift(source: &IRT0Program) -> Program {
-    if source.is_empty() {
+    if source.instructions.is_empty() {
         return Program {
+            entry_address: source.entry_address,
             entry: None,
             functions: Vec::new(),
         };
     }
 
     let mut builder = SyntheticFunctionBuilder {
-        source,
+        source: &source.instructions,
         jump_entries: HashSet::new(),
         by_start: HashMap::new(),
         functions: Vec::new(),
     };
 
-    for (offset, instr) in source {
+    for (offset, instr) in &source.instructions {
         let target = match instr {
             IRT0Inst::Jmp(target) => Some(target),
             IRT0Inst::If(_, inner) => match inner.as_ref() {
@@ -500,6 +501,7 @@ pub fn lift(source: &IRT0Program) -> Program {
         function.body = lift_conditions(SyntheticFunctionId { id }, body);
     }
     let mut program = prune_flags::tr(Program {
+        entry_address: source.entry_address,
         entry: Some(entry),
         functions: builder.functions,
     });
