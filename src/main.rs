@@ -1,10 +1,4 @@
 mod irt0;
-mod irt1;
-mod irt2;
-mod irt3;
-mod irt4;
-mod irt5;
-mod irt6;
 mod pe;
 
 use std::{
@@ -132,7 +126,6 @@ fn run() -> Result<(), Box<dyn Error>> {
                 read_request = Some((address, size));
                 index += 3;
             }
-            "--no-assumptions" | "--arithmetic" | "--address-comments" => index += 1,
             other => return Err(format!("unknown option: {other}").into()),
         }
     }
@@ -190,49 +183,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     if code.is_empty() {
         return Err("selected function is empty".into());
     }
-    let address_comments = args.iter().any(|arg| arg == "--address-comments");
     let irt0program = irt0::lift(code, usize::try_from(address)?);
 
-    let irt1program = irt1::lift(&irt0program);
-    if tier == 1 {
-        print!("{}", irt1::render::render(&irt1program, address_comments));
-        return Ok(());
+    for instr in irt0program.instructions {
+        println!("{:?}", instr.1);
     }
-    let irt2program = irt2::lift(&irt1program);
-    if tier == 2 {
-        print!("{}", irt2::render::render(&irt2program, address_comments));
-        return Ok(());
-    }
-    let irt3program = irt3::lift(&irt2program);
-    if tier == 3 {
-        print!("{}", irt3::render::render(&irt3program, address_comments));
-        return Ok(());
-    }
-    let irt4program = irt4::lift(&irt3program);
-    if tier == 4 {
-        print!("{}", irt4::render::render(&irt4program, address_comments));
-        return Ok(());
-    }
-    let irt5program = irt5::lift(&irt4program);
-    if tier == 5 {
-        print!("{}", irt5::render::render(&irt5program, address_comments));
-        return Ok(());
-    }
-    let mut irt6program = irt6::lift(&irt5program);
-    let report = if args.iter().any(|arg| arg == "--no-assumptions") {
-        irt6::unoptimize::run_with_options(
-            &mut irt6program,
-            irt6::unoptimize::Options {
-                allow_assumptions: false,
-            },
-        )
-    } else {
-        irt6::unoptimize::run(&mut irt6program)
-    };
-    if args.iter().any(|arg| arg == "--arithmetic") {
-        print!("{}\n", report.render());
-    }
-    print!("{}", irt6::render::render(&irt6program, address_comments));
     Ok(())
 }
 
