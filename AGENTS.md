@@ -1,6 +1,6 @@
 # Whimper
 
-Whimper is a work-in-progress Rust decompiler for x86_64 PE code. `iced-x86` decodes machine instructions; the pipeline in `src/main.rs` lifts them through `src/irt0` to `src/irt6` before rendering TypeScript-like output.
+Whimper is a work-in-progress Rust decompiler for x86_64 PE code. `iced-x86` decodes machine instructions and the representation is progressively lifted through multiple stages.
 
 ## Repository rules
 

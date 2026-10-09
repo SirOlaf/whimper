@@ -86,7 +86,6 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut use_entry = false;
     let mut list_sections = false;
     let mut read_request = None;
-    let mut tier = 6;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -100,13 +99,6 @@ fn run() -> Result<(), Box<dyn Error>> {
                     address = Some(parsed);
                 } else {
                     length = Some(usize::try_from(parsed)?);
-                }
-                index += 2;
-            }
-            "--tier" => {
-                tier = number(args.get(index + 1).ok_or("missing value for --tier")?)?;
-                if !(1..=6).contains(&tier) {
-                    return Err("--tier must be between 1 and 6".into());
                 }
                 index += 2;
             }
@@ -185,8 +177,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     let irt0program = irt0::lift(code, usize::try_from(address)?);
 
-    for instr in irt0program.instructions {
-        println!("{:?}", instr.1);
+    for instr in irt0program {
+        println!("{:?}", instr.kind);
     }
     Ok(())
 }
